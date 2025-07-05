@@ -1,27 +1,36 @@
 ﻿using UnityEngine;
 
+/// <summary>
+/// Controls the movement of the player character.
+/// </summary>
 public class PlayerMovement : MonoBehaviour
 {
-    public float moveSpeed = 5f; // Velocidade de movimentação do jogador
+    /// <summary>
+    /// The movement speed of the player.
+    /// </summary>
+    public float moveSpeed = 5f;
 
-    // Update é chamado uma vez por frame
+    /// <summary>
+    /// Update is called once per frame.
+    /// Handles player input and moves the character accordingly.
+    /// </summary>
     void Update()
     {
-        // Captura a entrada horizontal (A/D ou Setas Esquerda/Direita)
+        // Capture horizontal input (A/D or Left/Right Arrow keys)
         float horizontalInput = Input.GetAxis("Horizontal");
-        // Captura a entrada vertical (W/S ou Setas Cima/Baixo)
+        // Capture vertical input (W/S or Up/Down Arrow keys)
         float verticalInput = Input.GetAxis("Vertical");
 
-        // Cria um vetor de direção de movimento
+        // Create a movement direction vector
         Vector3 movement = new Vector3(horizontalInput, 0f, verticalInput);
 
-        // Normaliza o vetor para garantir que a movimentação diagonal não seja mais rápida
+        // Normalize the vector to ensure diagonal movement isn't faster
         if (movement.magnitude > 1f)
         {
             movement.Normalize();
         }
 
-        // Move o personagem
+        // Move the character
         transform.position += movement * moveSpeed * Time.deltaTime;
     }
 }
