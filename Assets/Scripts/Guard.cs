@@ -1,4 +1,4 @@
-using UnityEngine;
+﻿using UnityEngine;
 
 /// <summary>
 /// Represents a guard character in the game.
@@ -16,9 +16,14 @@ public class Guard : MonoBehaviour
         // Ensure the guard's collider is marked as Is Trigger
         // Or use OnCollisionEnter if you prefer physical collisions
         if (other.CompareTag("Player"))
-        {
-            Debug.Log("Player caught by guard!");
-            // TODO: Implement capture logic (player respawn, loss of coins, etc.)
-        }
+            // Encontramos um guarda, então o jogador perde uma vida
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.LoseLife();
+            }
+            else
+            {
+                Debug.LogError("GameManager Instance is null!");
+            }
     }
 }

@@ -25,11 +25,6 @@ public class GameManager : MonoBehaviour
     private int score = 0;
 
     /// <summary>
-    /// The number of power-ups to generate.
-    /// </summary>
-    public int numberOfPowerUpsToSpawn = 3;
-
-    /// <summary>
     /// Array of possible spawn points for the player.
     /// </summary>
     public Transform[] playerSpawnPoints;
@@ -39,12 +34,30 @@ public class GameManager : MonoBehaviour
     /// </summary>
     public GameObject playerPrefab;
 
-    private GameObject currentPlayer; // Reference to the currently active player instance
+    /// <summary>
+    /// Reference to the currently active player instance
+    /// </summary>
+    private GameObject currentPlayer;
 
     /// <summary>
     /// Reference to the Guard prefab to be instantiated.
     /// </summary>
     public GameObject guardPrefab;
+
+    /// <summary>
+    /// The initial amount of lives that the players have.
+    /// </summary>
+    public int startingLives = 3;
+
+    /// <summary>
+    /// The current amount of lives that the players have.
+    /// </summary>
+    private int currentLives;
+
+    /// <summary>
+    /// Game over panel from scene.
+    /// </summary>
+    public GameObject gameOverPanel;
 
     /// <summary>
     /// The number of guards to generate.
@@ -82,6 +95,45 @@ public class GameManager : MonoBehaviour
     public int scoreToWin = 10;
 
     /// <summary>
+    /// How many coins the player needs to collect before their speed is reduced.
+    /// </summary>
+    public int coinsPerSpeedReduction = 1;
+
+    /// <summary>
+    /// The percentage by which the player's speed is reduced. (e.g., 0.1 for 10%)
+    /// </summary>
+    [Range(0.01f, 0.5f)] // Limita o valor entre 1% e 50% para evitar reduções muito drásticas
+    public float speedReductionPercentage = 0.08f;
+
+    // --- VARIÁVEIS DA MOCHILA ---
+    [Header("Backpack Growth Settings")]
+    /// <summary>
+    /// Reference to the backpack GameObject child of the player.
+    /// This should be assigned in the Player prefab.
+    /// </summary>
+    public Transform playerBackpack; // Referência à mochila do player
+
+    /// <summary>
+    /// Number of coins required to advance one stage of backpack growth.
+    /// </summary>
+    public int coinsPerBackpackStage = 1; // Exemplo: A cada 3 moedas, a mochila cresce
+
+    /// <summary>
+    /// Array of scales for each backpack growth stage.
+    /// Stage 0: Initial scale (0.5, 0.3, 0.5)
+    /// Stage 1: ...
+    /// Stage 4: Final scale (1.5, 0.8, 1)
+    /// </summary>
+    public Vector3[] backpackScales = new Vector3[11];
+
+    private int currentBackpackStage = 0;
+    // --- FIM DAS VARIÁVEIS DA MOCHILA ---
+
+    // --- NOVA VARIÁVEL PARA VELOCIDADE BASE DO PLAYER ---
+    private float _playerBaseMoveSpeed;
+    // --- FIM DA NOVA VARIÁVEL ---
+
+    /// <summary>
     /// Called when the script instance is being loaded.
     /// Implements the Singleton pattern to ensure only one GameManager exists.
     /// </summary>
@@ -95,6 +147,22 @@ public class GameManager : MonoBehaviour
         {
             Instance = this;
         }
+
+        // Inicializa as escalas da mochila com valores padrão se não forem definidas no Inspector
+        if (backpackScales[0] == Vector3.zero) // Verifica se o primeiro elemento é zero, indicando não inicializado
+        {
+            backpackScales[0] = new Vector3(0.5f, 0.3f, 0.5f);
+            backpackScales[1] = new Vector3(0.55f, 0.35f, 0.55f);
+            backpackScales[2] = new Vector3(0.6f, 0.4f, 0.6f);
+            backpackScales[3] = new Vector3(0.65f, 0.45f, 0.65f);
+            backpackScales[4] = new Vector3(0.7f, 0.5f, 0.7f);
+            backpackScales[5] = new Vector3(0.75f, 0.55f, 0.75f);
+            backpackScales[6] = new Vector3(0.8f, 0.6f, 0.8f);
+            backpackScales[7] = new Vector3(0.85f, 0.65f, 0.85f);
+            backpackScales[8] = new Vector3(0.9f, 0.7f, 0.9f);
+            backpackScales[8] = new Vector3(0.95f, 0.75f, 0.95f);
+            backpackScales[9] = new Vector3(1f, 0.8f, 1.0f);
+        }
     }
 
     /// <summary>
@@ -104,7 +172,13 @@ public class GameManager : MonoBehaviour
     void Start()
     {
         timeRemaining = gameDuration;
+        currentLives = startingLives;
 
+        if (UIManager.Instance != null)
+        {
+            UIManager.Instance.UpdateTimerUI(timeRemaining);
+            UIManager.Instance.UpdateLivesUI(currentLives); // Chame o método para atualizar as vidas na UI
+        }
         if (playerPrefab != null && currentPlayer == null)
         {
             SpawnPlayer();
@@ -119,6 +193,8 @@ public class GameManager : MonoBehaviour
             Debug.LogError("Coin Spawner not assigned to GameManager!");
         }
 
+        currentBackpackStage = 0; // Reseta o estágio da mochila no início do jogo
+        // UpdatePlayerStats() será chamado dentro de SpawnPlayer() para garantir que tudo esteja configurado após o spawn
         SpawnGuards();
     }
 
@@ -131,7 +207,7 @@ public class GameManager : MonoBehaviour
         if (gameEnded) return;
 
         timeRemaining -= Time.deltaTime;
-        if (UIManager.Instance != null) // Added check to prevent error if UIManager doesn't exist yet
+        if (UIManager.Instance != null)
         {
             UIManager.Instance.UpdateTimerUI(timeRemaining);
         }
@@ -142,9 +218,6 @@ public class GameManager : MonoBehaviour
             EndGame(false); // Game ends with a loss
         }
 
-        // Win condition can be the total number of coins in the game, or if all coins have been collected
-        // If you changed the scoreToWin logic to be the total number of spawned coins, use:
-        // if (score >= coinSpawner.numberOfCoinsToSpawn)
         if (score >= scoreToWin) // Keeps the original scoreToWin logic
         {
             EndGame(true); // Game ends with a win
@@ -163,7 +236,86 @@ public class GameManager : MonoBehaviour
         {
             UIManager.Instance.UpdateScoreUI(score);
         }
+        UpdatePlayerStats(); // Atualiza velocidade e mochila
     }
+
+    /// <summary>
+    /// Reduces the player's score and updates speed/backpack.
+    /// </summary>
+    /// <param name="amount">The amount of score to reduce.</param>
+    /// <param name="dropPosition">The position where the coin should be instantiated.</param>
+    /// <param name="dropRotation">The rotation for the instantiated coin.</param> // NOVO PARÂMETRO
+    /// <param name="coinPrefabToDrop">The coin prefab to instantiate.</param>
+    public void ReleaseCoin(int amount, Vector3 dropPosition, Quaternion dropRotation, GameObject coinPrefabToDrop) // NOVO PARÂMETRO
+    {
+        score -= amount;
+        score = Mathf.Max(0, score); // Garante que a pontuação não seja negativa
+        Debug.Log("Score: " + score + " (Moeda solta)");
+        if (UIManager.Instance != null)
+        {
+            UIManager.Instance.UpdateScoreUI(score);
+        }
+        UpdatePlayerStats(); // Atualiza velocidade e mochila
+
+        // Instancia a moeda solta com a rotação fornecida
+        if (coinPrefabToDrop != null)
+        {
+            Instantiate(coinPrefabToDrop, dropPosition, dropRotation); // Usando dropRotation
+            Debug.Log("Moeda solta em: " + dropPosition);
+        }
+        else
+        {
+            Debug.LogWarning("Coin Prefab not assigned in PlayerMovement to drop a coin!");
+        }
+    }
+
+    /// <summary>
+    /// Updates the player's speed and backpack scale based on the current score.
+    /// </summary>
+    private void UpdatePlayerStats()
+    {
+        if (currentPlayer == null) return;
+
+        // --- Lógica de Velocidade ---
+        PlayerMovement playerMovement = currentPlayer.GetComponent<PlayerMovement>();
+        if (playerMovement != null)
+        {
+            // Usa a velocidade base armazenada no GameManager
+            float baseSpeed = _playerBaseMoveSpeed;
+
+            // Calcula o estágio de redução de velocidade baseado na pontuação
+            int speedReductionStage = score / coinsPerSpeedReduction;
+            // Garante que o estágio não exceda um limite razoável para a velocidade não ficar negativa
+            // A velocidade mínima é 1f, então o máximo de redução é (baseSpeed - 1f) / (baseSpeed * speedReductionPercentage)
+            float maxPossibleReductionStages = (baseSpeed - 1f) / (baseSpeed * speedReductionPercentage);
+            speedReductionStage = Mathf.Min(speedReductionStage, Mathf.FloorToInt(maxPossibleReductionStages));
+
+            float newSpeed = baseSpeed * (1f - (speedReductionStage * speedReductionPercentage));
+            // Garante que a velocidade não seja menor que um valor mínimo (ex: 1f)
+            newSpeed = Mathf.Max(newSpeed, 1f); // Define uma velocidade mínima para o player não parar completamente
+            playerMovement.SetMoveSpeed(newSpeed);
+        }
+
+        // --- Lógica de crescimento/diminuição da mochila ---
+        if (playerBackpack != null)
+        {
+            int newBackpackStage = score / coinsPerBackpackStage;
+            // Garante que o estágio não exceda os limites do array de escalas
+            newBackpackStage = Mathf.Clamp(newBackpackStage, 0, backpackScales.Length - 1);
+
+            if (newBackpackStage != currentBackpackStage)
+            {
+                currentBackpackStage = newBackpackStage;
+                playerBackpack.localScale = backpackScales[currentBackpackStage];
+                Debug.Log("Mochila ajustada para o estágio: " + currentBackpackStage + " com escala: " + backpackScales[currentBackpackStage]);
+            }
+        }
+        else
+        {
+            Debug.LogWarning("Player Backpack Transform not assigned in GameManager!");
+        }
+    }
+
 
     /// <summary>
     /// Gets the current score.
@@ -208,6 +360,25 @@ public class GameManager : MonoBehaviour
         currentPlayer = Instantiate(playerPrefab, spawnPoint.position, spawnPoint.rotation);
         Debug.Log("Player spawned at: " + spawnPoint.position);
 
+        // --- NOVO CÓDIGO PARA PEGAR A VELOCIDADE BASE DO PLAYER E ATRIBUIR A MOCHILA ---
+        PlayerMovement pm = currentPlayer.GetComponent<PlayerMovement>();
+        if (pm != null)
+        {
+            _playerBaseMoveSpeed = pm.moveSpeed; // Armazena a velocidade inicial do player
+        }
+        else
+        {
+            Debug.LogError("PlayerMovement script not found on player prefab!");
+        }
+
+        // Encontra a mochila como um filho do player recém-instanciado
+        playerBackpack = currentPlayer.transform.Find("PlayerBackpack"); // Certifique-se que o nome é exato
+        if (playerBackpack == null)
+        {
+            Debug.LogWarning("PlayerBackpack child GameObject not found on player prefab! Backpack growth will not work.");
+        }
+        // --- FIM DO NOVO CÓDIGO ---
+
         // Once the player is spawned, tell the CameraFollow script to follow this new player.
         if (CameraFollow.Instance != null)
         {
@@ -218,6 +389,9 @@ public class GameManager : MonoBehaviour
         {
             Debug.LogWarning("CameraFollow.Instance not found. Camera will not be configured to follow the player automatically. Make sure CameraFollow script is attached to your Main Camera and it has an active GameObject.");
         }
+
+        // Garante que a velocidade e o tamanho da mochila sejam atualizados para o estado inicial
+        UpdatePlayerStats();
     }
 
     /// <summary>
@@ -266,6 +440,35 @@ public class GameManager : MonoBehaviour
     }
 
     /// <summary>
+    /// Reduce life points metho
+    /// </summary>
+    public void LoseLife()
+    {
+        if (!gameEnded)
+        {
+            currentLives--;
+            Debug.Log("Vida perdida! Vidas restantes: " + currentLives);
+            if (UIManager.Instance != null)
+            {
+                UIManager.Instance.UpdateLivesUI(currentLives);
+            }
+
+            if (currentLives <= 0)
+            {
+                Debug.Log("Game Over!");
+                EndGame(false);
+            }
+            else
+            {
+                // Opcional: Adicione aqui alguma lógica como o jogador ficar invulnerável por um curto período após perder uma vida
+                SpawnPlayer(); // Respawn do jogador após perder uma vida
+                // Ao respawnar o player, a mochila e a velocidade serão resetadas via UpdatePlayerStats()
+                SpawnGuards(); // Respawn dos guardas para manter o desafio
+            }
+        }
+    }
+
+    /// <summary>
     /// Ends the game, displaying a win or loss message and triggering a restart.
     /// </summary>
     /// <param name="won">True if the player won, false otherwise.</param>
@@ -276,6 +479,10 @@ public class GameManager : MonoBehaviour
         if (UIManager.Instance != null)
         {
             UIManager.Instance.ShowEndGamePanel(won);
+            if (gameOverPanel != null)
+            {
+                gameOverPanel.SetActive(true); // Ativa o painel de Game Over
+            }
         }
         StartCoroutine(RestartGameAfterDelay(3f));
     }

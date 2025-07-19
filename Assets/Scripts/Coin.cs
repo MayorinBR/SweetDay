@@ -28,22 +28,17 @@ public class Coin : MonoBehaviour
     }
 
     /// <summary>
-    /// Called when this collider 'trigger' enters another collider.
-    /// Handles the collection of the coin by the player.
+    /// This method is now called by the PlayerMovement script when the player explicitly collects it.
     /// </summary>
-    /// <param name="other">The other Collider involved in this collision.</param>
-    void OnTriggerEnter(Collider other)
+    public void CollectCoin()
     {
-        // Checks if the colliding object is the player
-        if (other.CompareTag("Player"))
+        // Adds score through the GameManager
+        if (GameManager.Instance != null)
         {
-            // Adds score through the GameManager
-            if (GameManager.Instance != null)
-            {
-                GameManager.Instance.AddScore(scoreValue);
-            }
-
-            gameObject.SetActive(false); // Deactivates the coin
+            GameManager.Instance.AddScore(scoreValue);
         }
+
+        // Destroys the coin GameObject from the scene
+        Destroy(gameObject);
     }
 }
