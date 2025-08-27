@@ -42,11 +42,3 @@ Contribuições são bem-vindas! Se você tiver ideias ou quiser ajudar, sinta-s
 4.  Comitar suas mudanças (`git commit -m 'Adiciona nova feature'`).
 5.  Enviar para a "branch" (`git push origin feature/sua-feature`).
 6.  Abrir um "Pull Request".
-
-## Licença
-
-Este projeto está sob a licença [Nome da Licença, ex: MIT License]. Veja o arquivo `LICENSE` para mais detalhes.
-
----
-
-## Estrutura do Projeto Unity
