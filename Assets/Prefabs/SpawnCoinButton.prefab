@@ -12,6 +12,7 @@ GameObject:
   - component: {fileID: 8176607886649883256}
   - component: {fileID: 6444760009801125826}
   - component: {fileID: 9096109994343974365}
+  - component: {fileID: 4872045259142042488}
   - component: {fileID: 6985770607940606552}
   - component: {fileID: -2973066716443855412}
   m_Layer: 0
@@ -110,6 +111,31 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 5061815556115878600}
   m_Mesh: {fileID: 10202, guid: 0000000000000000e000000000000000, type: 0}
+--- !u!114 &4872045259142042488
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5061815556115878600}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d5a57f767e5e46a458fc5d3c628d0cbb, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  GlobalObjectIdHash: 3924123731
+  InScenePlacedSourceGlobalObjectIdHash: 2973930998
+  DeferredDespawnTick: 0
+  Ownership: 1
+  AlwaysReplicateAsRoot: 0
+  SynchronizeTransform: 1
+  ActiveSceneSynchronization: 0
+  SceneMigrationSynchronization: 0
+  SpawnWithObservers: 1
+  DontDestroyWithOwner: 0
+  AutoObjectParentSync: 1
+  SyncOwnerTransformWhenParented: 1
+  AllowOwnerToParent: 0
 --- !u!114 &6985770607940606552
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -122,6 +148,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bf77ee16ff1994e4c9afb20a72ba595c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  ShowTopMostFoldoutHeaderGroup: 1
   timeToStayInZone: 3
   coinsToSpawn: 5
   coinSpawnRadius: 3

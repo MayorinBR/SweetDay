@@ -1,29 +1,21 @@
 ﻿using UnityEngine;
+using Unity.Netcode;
 
-/// <summary>
-/// Represents a guard character in the game.
-/// Handles interactions when the guard "catches" the player.
-/// </summary>
-public class Guard : MonoBehaviour
+public class Guard : NetworkBehaviour
 {
-    /// <summary>
-    /// Called when this collider 'trigger' enters another collider.
-    /// Detects if the player has been caught by the guard.
-    /// </summary>
-    /// <param name="other">The other Collider involved in this collision.</param>
     void OnTriggerEnter(Collider other)
     {
-        // Ensure the guard's collider is marked as Is Trigger
-        // Or use OnCollisionEnter if you prefer physical collisions
+        // Apenas o servidor processa a colisão
+        if (!IsServer) return;
+
         if (other.CompareTag("Player"))
-            // Encontramos um guarda, então o jogador perde uma vida
-            if (GameManager.Instance != null)
+        {
+            var gameManager = FindFirstObjectByType<GameManager>();
+            if (gameManager != null)
             {
-                GameManager.Instance.LoseLife();
+                // Chama a função RPC no servidor para perder uma vida
+                gameManager.LoseLifeServerRpc();
             }
-            else
-            {
-                Debug.LogError("GameManager Instance is null!");
-            }
+        }
     }
 }

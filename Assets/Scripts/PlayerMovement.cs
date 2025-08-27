@@ -1,229 +1,228 @@
 ﻿using UnityEngine;
-using System.Collections; // Necessário para Coroutines
+using Unity.Netcode;
+using System.Collections;
+using System.Collections.Generic;
 
-/// <summary>
-/// Controls the movement of the player character.
-/// </summary>
-public class PlayerMovement : MonoBehaviour
+public class PlayerMovement : NetworkBehaviour
 {
-    /// <summary>
-    /// The current movement speed of the player.
-    /// </summary>
     public float moveSpeed = 5f;
-
-    /// <summary>
-    /// The initial movement speed of the player. This value will be set once at Start.
-    /// </summary>
+    public float rotationSpeed = 720f;
     private float baseMoveSpeed;
-
-    /// <summary>
-    /// Reference to the CharacterController component attached to this GameObject.
-    /// </summary>
     private CharacterController _characterController;
 
-    [Header("Rotation Settings")]
-    /// <summary>
-    /// The speed at which the player rotates to face the movement direction.
-    /// </summary>
-    public float rotationSpeed = 720f; // Velocidade de rotação em graus por segundo
+    public Transform backpackTransform;
+    public float speedReductionPerCoin = 0.05f;
+    public Vector3 initialBackpackScale = new Vector3(0.4f, 0.2f, 0.4f);
+    private Vector3[] backpackScales = new Vector3[10];
 
-    // --- NOVAS VARIÁVEIS PARA COLETA/SOLTURA ---
-    [Header("Coin Interaction Settings")]
-    /// <summary>
-    /// The duration (in seconds) the player is immobilized while collecting a coin.
-    /// </summary>
     public float collectionDuration = 0.5f;
-
-    /// <summary>
-    /// The distance behind the player where a dropped coin will appear.
-    /// </summary>
     public float dropDistance = 2.0f;
+    public GameObject coinPrefab;
 
-    /// <summary>
-    /// Prefab of the coin to be instantiated when the player drops one.
-    /// </summary>
-    public GameObject coinPrefab; // Arraste o prefab da moeda para cá no Inspector
+    public NetworkVariable<int> coinsCarried = new NetworkVariable<int>(0);
 
-    /// <summary>
-    /// The percentage of dropDistance for random variation in dropped coin position. (e.g., 0.25 for +/- 25%)
-    /// </summary>
-    [Range(0f, 1f)] // Limita o valor entre 0% e 100%
-    public float dropPositionRandomness = 0.50f; // Variação de +/- 5% da dropDistance
+    // VARIÁVEIS DE REDE PARA SINCRONIZAÇÃO DE MOVIMENTO
+    public NetworkVariable<Vector3> NetworkPosition = new NetworkVariable<Vector3>();
+    public NetworkVariable<Quaternion> NetworkRotation = new NetworkVariable<Quaternion>();
 
-    private bool _isCollecting = false; // Flag para imobilizar o player
-    private Coin _currentNearbyCoin = null; // Referência à moeda próxima que pode ser coletada
-    // --- FIM DAS NOVAS VARIÁVEIS ---
+    private Coin _currentNearbyCoin;
+    private bool _isCollecting = false;
+
+    private CoinSpawner _coinSpawner;
+    private GameManager _gameManager;
 
     void Start()
     {
-        baseMoveSpeed = moveSpeed; // Store the initial speed
         _characterController = GetComponent<CharacterController>();
-        if (_characterController == null)
+        baseMoveSpeed = moveSpeed;
+        _coinSpawner = FindFirstObjectByType<CoinSpawner>();
+        _gameManager = FindFirstObjectByType<GameManager>();
+
+        for (int i = 0; i < backpackScales.Length; i++)
         {
-            Debug.LogError("CharacterController not found on player GameObject. Please add one!");
+            backpackScales[i] = initialBackpackScale * (1 + (i + 1) * 0.2f);
         }
     }
 
-    /// <summary>
-    /// Update is called once per frame.
-    /// Handles player input and moves the character accordingly using CharacterController.
-    /// </summary>
+    public override void OnNetworkSpawn()
+    {
+        if (IsOwner)
+        {
+            coinsCarried.OnValueChanged += OnCoinsCarriedChanged;
+
+            CameraFollow cameraFollow = FindFirstObjectByType<CameraFollow>();
+            if (cameraFollow != null)
+            {
+                cameraFollow.Target = this.transform;
+            }
+
+            // CORREÇÃO: Define a posição de spawn para o dono (owner) do objeto
+            // Garante que o jogador comece na altura correta (y = 0.58)
+            transform.position = new Vector3(transform.position.x, 0.58f, transform.position.z);
+        }
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        if (IsOwner)
+        {
+            coinsCarried.OnValueChanged -= OnCoinsCarriedChanged;
+        }
+    }
+
     void Update()
     {
-        if (_characterController == null) return;
+        // Se o objeto não é o local, ele simplesmente atualiza sua posição
+        // com base nas variáveis de rede. Isso sincroniza o movimento.
+        if (!IsOwner)
+        {
+            transform.position = NetworkPosition.Value;
+            transform.rotation = NetworkRotation.Value;
+            return;
+        }
 
-        // Se o player estiver coletando, ele não pode se mover
+        // Se o jogador é o local (dono), ele pode se mover.
         if (_isCollecting)
         {
-            // Opcional: Adicionar uma animação de coleta aqui
-            return; // Impede qualquer movimento ou rotação
+            _characterController.Move(Vector3.zero);
+            return;
         }
 
-        float horizontalInput = Input.GetAxis("Horizontal");
-        float verticalInput = Input.GetAxis("Vertical");
+        float horizontal = Input.GetAxis("Horizontal");
+        float vertical = Input.GetAxis("Vertical");
 
-        Vector3 movement = new Vector3(horizontalInput, 0f, verticalInput);
+        Vector3 direction = new Vector3(horizontal, 0, vertical).normalized;
 
-        if (movement.magnitude > 1f)
+        if (direction.magnitude >= 0.1f)
         {
-            movement.Normalize();
+            Quaternion toRotation = Quaternion.LookRotation(direction, Vector3.up);
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, toRotation, rotationSpeed * Time.deltaTime);
+
+            _characterController.Move(direction * moveSpeed * Time.deltaTime);
         }
 
-        // Move o personagem usando o CharacterController
-        _characterController.Move(movement * moveSpeed * Time.deltaTime);
+        // Atualiza as variáveis de rede para que o servidor possa replicar o movimento.
+        UpdatePositionServerRpc(transform.position, transform.rotation);
 
-        // Lógica de Rotação
-        if (movement != Vector3.zero)
-        {
-            Quaternion targetRotation = Quaternion.LookRotation(movement);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
-        }
-
-        // --- LÓGICA DE INPUT PARA COLETA E SOLTURA ---
-        // Input para Coletar Moeda ("X")
         if (Input.GetKeyDown(KeyCode.X))
         {
-            // Verifica se a moeda ainda existe e está ativa antes de tentar coletar
-            if (_currentNearbyCoin != null && _currentNearbyCoin.gameObject.activeSelf)
+            if (_currentNearbyCoin != null && !_isCollecting)
             {
-                StartCoroutine(CollectCoinCoroutine(_currentNearbyCoin));
-            }
-            else
-            {
-                Debug.Log("Nenhuma moeda próxima ou ativa para coletar.");
-                _currentNearbyCoin = null; // Garante que a referência seja limpa se a moeda não for mais válida
+                StartCoroutine(CollectCoin());
             }
         }
 
-        // Input para Soltar Moeda ("Z")
-        if (Input.GetKeyDown(KeyCode.Z))
+        if (Input.GetKeyDown(KeyCode.C))
         {
-            if (GameManager.Instance != null && GameManager.Instance.GetScore() > 0)
+            if (coinsCarried.Value > 0)
             {
-                // Calcula a posição base para soltar a moeda atrás do player
-                Vector3 baseDropPosition = transform.position - transform.forward * dropDistance;
-                baseDropPosition.y = 0.5f; // Ajusta a altura da moeda solta
-
-                // --- NOVO CÓDIGO PARA ALEATORIEDADE NA POSIÇÃO DE DROP ---
-                float randomOffsetRange = dropDistance * dropPositionRandomness;
-                float randomXOffset = Random.Range(-randomOffsetRange, randomOffsetRange);
-                float randomZOffset = Random.Range(-randomOffsetRange, randomOffsetRange);
-
-                // Aplica o offset aleatório no plano XZ
-                Vector3 finalDropPosition = baseDropPosition + new Vector3(randomXOffset, 0f, randomZOffset);
-                // --- FIM DO NOVO CÓDIGO ---
-
-                // Passa a rotação desejada para a moeda solta (ex: rotação de 90 graus no X para ficar "em pé")
-                Quaternion dropRotation = Quaternion.Euler(0f, 0f, 90f); // Ou use a rotação do CoinSpawner se for pública
-
-                GameManager.Instance.ReleaseCoin(1, finalDropPosition, dropRotation, coinPrefab); // Passa a posição final e rotação
-            }
-            else
-            {
-                Debug.Log("Você não tem moedas para soltar.");
+                RequestDropCoinServerRpc(transform.position, transform.forward, dropDistance);
             }
         }
-        // --- FIM DA LÓGICA DE INPUT ---
     }
 
-    /// <summary>
-    /// Coroutine to handle the coin collection process with a delay.
-    /// </summary>
-    /// <param name="coinToCollect">The Coin script of the coin to be collected.</param>
-    IEnumerator CollectCoinCoroutine(Coin coinToCollect)
+    // NOVO RPC para o cliente enviar sua posição/rotação ao servidor.
+    [ServerRpc]
+    public void UpdatePositionServerRpc(Vector3 position, Quaternion rotation)
     {
-        _isCollecting = true; // Imobiliza o player
-        Debug.Log("Coletando moeda... Player parado.");
+        NetworkPosition.Value = position;
+        NetworkRotation.Value = rotation;
+    }
 
-        yield return new WaitForSeconds(collectionDuration); // Espera pelo tempo de coleta
-
-        // Verifica novamente se a moeda ainda existe e está ativa antes de coletar
-        if (coinToCollect != null && coinToCollect.gameObject.activeSelf)
+    [ServerRpc]
+    public void RequestCollectCoinServerRpc(ulong coinNetworkObjectId)
+    {
+        if (NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(coinNetworkObjectId, out NetworkObject networkObject))
         {
-            coinToCollect.CollectCoin(); // Chama o método de coleta da moeda
-            Debug.Log("Moeda coletada!");
+            networkObject.Despawn();
+            _gameManager.score.Value += 1;
+            coinsCarried.Value++;
+        }
+    }
+
+    [ServerRpc]
+    public void RequestDropCoinServerRpc(Vector3 playerPosition, Vector3 playerDirection, float distance)
+    {
+        if (coinsCarried.Value > 0)
+        {
+            Vector3 dropPosition = playerPosition - playerDirection.normalized * distance;
+            _coinSpawner.SpawnSingleCoin(dropPosition, Quaternion.identity);
+            coinsCarried.Value--;
+            _gameManager.SubtractScoreServerRpc(1);
+        }
+    }
+
+    IEnumerator CollectCoin()
+    {
+        _isCollecting = true;
+        if (_currentNearbyCoin != null)
+        {
+            RequestCollectCoinServerRpc(_currentNearbyCoin.GetComponent<NetworkObject>().NetworkObjectId);
+        }
+        yield return new WaitForSeconds(collectionDuration);
+        _isCollecting = false;
+    }
+
+    private void OnCoinsCarriedChanged(int oldCoins, int newCoins)
+    {
+        UpdatePlayerStats();
+    }
+
+    public void UpdatePlayerStats()
+    {
+        UpdateBackpackModel();
+        UpdateMoveSpeed();
+    }
+
+    public void UpdateMoveSpeed()
+    {
+        float newSpeed = baseMoveSpeed - (coinsCarried.Value * speedReductionPerCoin);
+        moveSpeed = Mathf.Max(1f, newSpeed);
+    }
+
+    private void UpdateBackpackModel()
+    {
+        if (backpackTransform == null) return;
+
+        if (coinsCarried.Value == 0)
+        {
+            backpackTransform.localScale = initialBackpackScale;
         }
         else
         {
-            Debug.Log("Moeda desapareceu antes da coleta ser concluída ou já foi coletada.");
-        }
+            int index = coinsCarried.Value - 1;
 
-        _isCollecting = false; // Libera o player
-        _currentNearbyCoin = null; // Limpa a referência da moeda
+            if (index >= 0 && index < backpackScales.Length)
+            {
+                backpackTransform.localScale = backpackScales[index];
+            }
+            else if (index >= backpackScales.Length)
+            {
+                backpackTransform.localScale = backpackScales[backpackScales.Length - 1];
+            }
+        }
     }
 
-    /// <summary>
-    /// Called when this collider 'trigger' enters another collider.
-    /// Detects if a coin is nearby for collection.
-    /// </summary>
-    /// <param name="other">The other Collider involved in this collision.</param>
     void OnTriggerEnter(Collider other)
     {
-        if (other.CompareTag("Coin")) // Certifique-se que suas moedas têm a tag "Coin"
+        if (other.CompareTag("Coin"))
         {
             Coin coin = other.GetComponent<Coin>();
             if (coin != null)
             {
                 _currentNearbyCoin = coin;
-                Debug.Log("Moeda detectada para coleta: " + _currentNearbyCoin.name);
             }
         }
     }
 
-    /// <summary>
-    /// Called when another collider exits this trigger.
-    /// Clears the reference to the nearby coin.
-    /// </summary>
-    /// <param name="other">The other Collider involved in this collision.</param>
     void OnTriggerExit(Collider other)
     {
         if (other.CompareTag("Coin"))
         {
-            // Limpa a referência apenas se a moeda que saiu é a que estava sendo rastreada
             if (_currentNearbyCoin != null && _currentNearbyCoin.gameObject == other.gameObject)
             {
                 _currentNearbyCoin = null;
-                Debug.Log("Moeda saiu da área de coleta.");
             }
         }
-    }
-
-    /// <summary>
-    /// Sets a new movement speed for the player.
-    /// </summary>
-    /// <param name="newSpeed">The new speed value.</param>
-    public void SetMoveSpeed(float newSpeed)
-    {
-        moveSpeed = newSpeed;
-        Debug.Log("Player speed set to: " + moveSpeed);
-    }
-
-    /// <summary>
-    /// Resets the player's movement speed to its base value.
-    /// </summary>
-    public void ResetMoveSpeed()
-    {
-        moveSpeed = baseMoveSpeed;
-        Debug.Log("Player speed reset to: " + moveSpeed);
     }
 }

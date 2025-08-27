@@ -121,9 +121,11 @@ GameObject:
   - component: {fileID: 7859593376233170532}
   - component: {fileID: 6792959146115865594}
   - component: {fileID: 4001085909831639549}
+  - component: {fileID: 8211514910963815492}
   - component: {fileID: 4589267676944875699}
   - component: {fileID: -8936713494322576325}
   - component: {fileID: 2569884142741119131}
+  - component: {fileID: -8333705797228167623}
   m_Layer: 0
   m_Name: Player
   m_TagString: Player
@@ -200,6 +202,31 @@ MeshRenderer:
   m_SortingLayer: 0
   m_SortingOrder: 0
   m_AdditionalVertexStreams: {fileID: 0}
+--- !u!114 &8211514910963815492
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 3286158824952163492}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d5a57f767e5e46a458fc5d3c628d0cbb, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  GlobalObjectIdHash: 3703999469
+  InScenePlacedSourceGlobalObjectIdHash: 3703999469
+  DeferredDespawnTick: 0
+  Ownership: 1
+  AlwaysReplicateAsRoot: 0
+  SynchronizeTransform: 1
+  ActiveSceneSynchronization: 0
+  SceneMigrationSynchronization: 0
+  SpawnWithObservers: 1
+  DontDestroyWithOwner: 0
+  AutoObjectParentSync: 1
+  SyncOwnerTransformWhenParented: 1
+  AllowOwnerToParent: 0
 --- !u!114 &4589267676944875699
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -212,12 +239,17 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4f0c4c78cc0f44846996a2943ddbbd27, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  ShowTopMostFoldoutHeaderGroup: 1
   moveSpeed: 5
   rotationSpeed: 720
+  backpackTransform: {fileID: 3926268882588392571}
+  speedReductionPerCoin: 0.05
+  initialBackpackScale: {x: 0.4, y: 0.2, z: 0.4}
   collectionDuration: 0.5
   dropDistance: 2
   coinPrefab: {fileID: 3599740276327336209, guid: 788e4609651463a4b842c996cccfb00e, type: 3}
-  dropPositionRandomness: 0.25
+  coinsCarried:
+    m_InternalValue: 0
 --- !u!143 &-8936713494322576325
 CharacterController:
   m_ObjectHideFlags: 0
@@ -266,3 +298,49 @@ CapsuleCollider:
   m_Height: 2
   m_Direction: 1
   m_Center: {x: 0, y: 0, z: 0}
+--- !u!114 &-8333705797228167623
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 3286158824952163492}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e96cb6065543e43c4a752faaa1468eb1, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  ShowTopMostFoldoutHeaderGroup: 1
+  NetworkTransformExpanded: 0
+  AutoOwnerAuthorityTickOffset: 1
+  PositionInterpolationType: 0
+  RotationInterpolationType: 0
+  ScaleInterpolationType: 0
+  PositionLerpSmoothing: 1
+  PositionMaxInterpolationTime: 0.1
+  RotationLerpSmoothing: 1
+  RotationMaxInterpolationTime: 0.1
+  ScaleLerpSmoothing: 1
+  ScaleMaxInterpolationTime: 0.1
+  AuthorityMode: 0
+  TickSyncChildren: 0
+  UseUnreliableDeltas: 0
+  SyncPositionX: 1
+  SyncPositionY: 1
+  SyncPositionZ: 1
+  SyncRotAngleX: 1
+  SyncRotAngleY: 1
+  SyncRotAngleZ: 1
+  SyncScaleX: 1
+  SyncScaleY: 1
+  SyncScaleZ: 1
+  PositionThreshold: 0.001
+  RotAngleThreshold: 0.01
+  ScaleThreshold: 0.01
+  UseQuaternionSynchronization: 0
+  UseQuaternionCompression: 0
+  UseHalfFloatPrecision: 0
+  InLocalSpace: 0
+  SwitchTransformSpaceWhenParented: 0
+  Interpolate: 1
+  SlerpPosition: 0
