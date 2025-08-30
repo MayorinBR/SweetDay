@@ -3,29 +3,37 @@ using Unity.Netcode;
 using System.Collections;
 using System.Collections.Generic;
 
+/// <summary>
+/// Controls the movement of the player character in a networked environment.
+/// </summary>
 public class PlayerMovement : NetworkBehaviour
 {
+    // Public and Inspector-visible variables
+    [Header("Movement Settings")]
     public float moveSpeed = 5f;
     public float rotationSpeed = 720f;
-    private float baseMoveSpeed;
-    private CharacterController _characterController;
-
-    public Transform backpackTransform;
     public float speedReductionPerCoin = 0.05f;
-    public Vector3 initialBackpackScale = new Vector3(0.4f, 0.2f, 0.4f);
-    private Vector3[] backpackScales = new Vector3[10];
 
+    [Header("Backpack Settings")]
+    public Transform backpackTransform;
+    public Vector3 initialBackpackScale = new Vector3(0.4f, 0.2f, 0.4f);
+    public Vector3[] backpackScales = new Vector3[10];
+
+    [Header("Coin Interaction Settings")]
     public float collectionDuration = 0.5f;
     public float dropDistance = 2.0f;
-    public GameObject coinPrefab;
 
+    // Network variables
     public NetworkVariable<int> coinsCarried = new NetworkVariable<int>(0);
 
-    // Variáveis para suavização de movimento em clientes remotos
+    // Variables for smoothing movement on remote clients
     private Vector3 _networkPosition;
     private Quaternion _networkRotation;
     public float networkMovementSmoothness = 5f;
 
+    // Private variables
+    private float baseMoveSpeed;
+    private CharacterController _characterController;
     private Coin _currentNearbyCoin;
     private bool _isCollecting = false;
 
@@ -33,179 +41,195 @@ public class PlayerMovement : NetworkBehaviour
     private GameManager _gameManager;
 
     private float _lastPositionUpdateTime = 0f;
-    private const float POSITION_UPDATE_INTERVAL = 0.1f; // 10 updates por segundo
+    private const float POSITION_UPDATE_INTERVAL = 0.1f; // 10 updates per second
 
-    void Start()
+    void Awake()
     {
-        _characterController = GetComponent<CharacterController>();
-        baseMoveSpeed = moveSpeed;
-        _coinSpawner = FindFirstObjectByType<CoinSpawner>();
-        _gameManager = FindFirstObjectByType<GameManager>();
-
-        for (int i = 0; i < backpackScales.Length; i++)
-        {
-            backpackScales[i] = initialBackpackScale * (1 + (i + 1) * 0.2f);
-        }
+        // Define backpack scales
+        backpackScales[0] = new Vector3(0.5f, 0.25f, 0.5f);
+        backpackScales[1] = new Vector3(0.6f, 0.3f, 0.6f);
+        backpackScales[2] = new Vector3(0.7f, 0.35f, 0.7f);
+        backpackScales[3] = new Vector3(0.8f, 0.4f, 0.8f);
+        backpackScales[4] = new Vector3(0.9f, 0.45f, 0.9f);
+        backpackScales[5] = new Vector3(1.0f, 0.5f, 1.0f);
+        backpackScales[6] = new Vector3(1.1f, 0.55f, 1.1f);
+        backpackScales[7] = new Vector3(1.2f, 0.6f, 1.2f);
+        backpackScales[8] = new Vector3(1.3f, 0.65f, 1.3f);
+        backpackScales[9] = new Vector3(1.4f, 0.7f, 1.4f);
     }
 
     public override void OnNetworkSpawn()
     {
-        if (IsOwner)
-        {
-            coinsCarried.OnValueChanged += OnCoinsCarriedChanged;
+        base.OnNetworkSpawn();
 
-            CameraFollow cameraFollow = FindFirstObjectByType<CameraFollow>();
-            if (cameraFollow != null)
-            {
-                cameraFollow.Target = this.transform;
-            }
-
-            // Garante que o jogador está na posição correta
-            if (IsServer)
-            {
-                transform.position = new Vector3(transform.position.x, 0.58f, transform.position.z);
-            }
-        }
-        else
+        // Initialize components and variables
+        baseMoveSpeed = moveSpeed;
+        _characterController = GetComponent<CharacterController>();
+        if (_characterController == null)
         {
-            // Clientes remotos começam com a posição/rotação atual
-            _networkPosition = transform.position;
-            _networkRotation = transform.rotation;
+            Debug.LogError("CharacterController not found on player GameObject. Please add one!");
         }
-    }
 
-    public override void OnNetworkDespawn()
-    {
-        if (IsOwner)
-        {
-            coinsCarried.OnValueChanged -= OnCoinsCarriedChanged;
-        }
+        // Find CoinSpawner and GameManager in the scene
+        _coinSpawner = FindFirstObjectByType<CoinSpawner>();
+        _gameManager = FindFirstObjectByType<GameManager>();
+
+        // Subscribe to the network variable change event
+        coinsCarried.OnValueChanged += OnCoinsCarriedChanged;
+
+        // Ensure the initial state is correct for all clients
+        UpdateBackpackModel();
     }
 
     void Update()
     {
-        if (!IsOwner)
-        {
-            // Interpolação suave para clientes remotos
-            transform.position = Vector3.Lerp(transform.position, _networkPosition, networkMovementSmoothness * Time.deltaTime);
-            transform.rotation = Quaternion.Lerp(transform.rotation, _networkRotation, networkMovementSmoothness * Time.deltaTime);
-            return;
-        }
-
         if (_isCollecting)
         {
-            _characterController.Move(Vector3.zero);
             return;
         }
 
-        float horizontal = Input.GetAxis("Horizontal");
-        float vertical = Input.GetAxis("Vertical");
-
-        Vector3 direction = new Vector3(horizontal, 0, vertical).normalized;
-
-        if (direction.magnitude >= 0.1f)
+        if (IsOwner)
         {
-            Quaternion toRotation = Quaternion.LookRotation(direction, Vector3.up);
-            transform.rotation = Quaternion.RotateTowards(transform.rotation, toRotation, rotationSpeed * Time.deltaTime);
-            _characterController.Move(direction * moveSpeed * Time.deltaTime);
+            HandlePlayerInput();
 
-            // Atualiza posição com mais frequência quando se movendo
-            if (Time.time - _lastPositionUpdateTime >= POSITION_UPDATE_INTERVAL)
+            // Local player is responsible for sending their position to the server
+            if (Time.time - _lastPositionUpdateTime > POSITION_UPDATE_INTERVAL)
             {
-                UpdatePositionServerRpc(transform.position, transform.rotation);
+                SubmitPositionServerRpc(transform.position, transform.rotation);
                 _lastPositionUpdateTime = Time.time;
             }
         }
-        else if (Time.time - _lastPositionUpdateTime >= POSITION_UPDATE_INTERVAL * 2)
+        else
         {
-            // Atualiza menos frequentemente quando parado
-            UpdatePositionServerRpc(transform.position, transform.rotation);
-            _lastPositionUpdateTime = Time.time;
+            // For remote clients, interpolate movement to smooth position transition
+            transform.position = Vector3.Lerp(transform.position, _networkPosition, Time.deltaTime * networkMovementSmoothness);
+            transform.rotation = Quaternion.Slerp(transform.rotation, _networkRotation, Time.deltaTime * networkMovementSmoothness);
+        }
+    }
+
+    /// <summary>
+    /// Captures player input and moves the CharacterController.
+    /// </summary>
+    private void HandlePlayerInput()
+    {
+        if (_characterController == null) return;
+
+        float horizontalInput = Input.GetAxis("Horizontal");
+        float verticalInput = Input.GetAxis("Vertical");
+
+        Vector3 movement = new Vector3(horizontalInput, 0f, verticalInput);
+        if (movement.magnitude > 1f)
+        {
+            movement.Normalize();
         }
 
+        _characterController.Move(movement * moveSpeed * Time.deltaTime);
+
+        // Rotation logic based on movement
+        if (movement != Vector3.zero)
+        {
+            Quaternion targetRotation = Quaternion.LookRotation(movement);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+        }
+
+        // Input logic for collecting a coin ('X')
         if (Input.GetKeyDown(KeyCode.X))
         {
-            if (_currentNearbyCoin != null && !_isCollecting)
+            if (_currentNearbyCoin != null && _currentNearbyCoin.IsSpawned)
             {
-                StartCoroutine(CollectCoin());
+                CollectCoinServerRpc(_currentNearbyCoin.GetComponent<NetworkObject>());
+            }
+            else
+            {
+                Debug.Log("No coin nearby or active to collect.");
+                _currentNearbyCoin = null;
             }
         }
 
+        // Input logic for dropping a coin ('C')
         if (Input.GetKeyDown(KeyCode.C))
         {
             if (coinsCarried.Value > 0)
             {
-                RequestDropCoinServerRpc(transform.position, transform.forward, dropDistance);
+                DropCoinServerRpc();
+            }
+            else
+            {
+                Debug.Log("You have no coins to drop.");
             }
         }
     }
 
-    [ServerRpc]
-    public void UpdatePositionServerRpc(Vector3 position, Quaternion rotation)
+    // RPC to synchronize player position and rotation
+    [ServerRpc(RequireOwnership = false)]
+    private void SubmitPositionServerRpc(Vector3 pos, Quaternion rot)
     {
-        UpdatePositionClientRpc(position, rotation);
+        _networkPosition = pos;
+        _networkRotation = rot;
     }
 
-    [ClientRpc]
-    public void UpdatePositionClientRpc(Vector3 position, Quaternion rotation)
-    {
-        if (IsOwner) return;
-
-        _networkPosition = position;
-        _networkRotation = rotation;
-    }
-
+    // RPC that runs on the server to collect a coin
     [ServerRpc]
-    public void RequestCollectCoinServerRpc(ulong coinNetworkObjectId)
+    private void CollectCoinServerRpc(NetworkObjectReference coinObjectReference)
     {
-        if (NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(coinNetworkObjectId, out NetworkObject networkObject))
+        if (coinsCarried.Value < 10)
         {
-            networkObject.Despawn();
-            _gameManager.score.Value += 1;
-            coinsCarried.Value++;
+            StartCoroutine(CollectCoinCoroutine(coinObjectReference));
+        }
+        else
+        {
+            Debug.Log("Backpack is full!");
         }
     }
 
-    [ServerRpc]
-    public void RequestDropCoinServerRpc(Vector3 playerPosition, Vector3 playerDirection, float distance)
-    {
-        if (coinsCarried.Value > 0)
-        {
-            Vector3 dropPosition = playerPosition - playerDirection.normalized * distance;
-            _coinSpawner.SpawnSingleCoin(dropPosition, Quaternion.identity);
-            coinsCarried.Value--;
-            _gameManager.SubtractScoreServerRpc(1);
-        }
-    }
-
-    IEnumerator CollectCoin()
+    // Coroutine to handle the collection process with a delay on the server
+    IEnumerator CollectCoinCoroutine(NetworkObjectReference coinObjectReference)
     {
         _isCollecting = true;
-        if (_currentNearbyCoin != null)
-        {
-            RequestCollectCoinServerRpc(_currentNearbyCoin.GetComponent<NetworkObject>().NetworkObjectId);
-        }
         yield return new WaitForSeconds(collectionDuration);
+
+        // Get the NetworkObject and Coin script
+        coinObjectReference.TryGet(out NetworkObject coinNetworkObject);
+        if (coinNetworkObject != null && coinNetworkObject.IsSpawned)
+        {
+            Coin coinToCollect = coinNetworkObject.GetComponent<Coin>();
+            if (coinToCollect != null)
+            {
+                _gameManager.AddScoreServerRpc(coinToCollect.scoreValue);
+                coinsCarried.Value++;
+                coinToCollect.GetComponent<NetworkObject>().Despawn();
+            }
+        }
         _isCollecting = false;
     }
 
-    private void OnCoinsCarriedChanged(int oldCoins, int newCoins)
+    // RPC to drop a coin
+    [ServerRpc]
+    private void DropCoinServerRpc()
     {
-        UpdatePlayerStats();
+        if (coinsCarried.Value > 0)
+        {
+            _gameManager.AddScoreServerRpc(-1);
+            coinsCarried.Value--;
+
+            Vector3 dropPosition = transform.position - transform.forward * dropDistance;
+            _coinSpawner.SpawnSingleCoinServerRpc(dropPosition, Quaternion.identity);
+        }
     }
 
-    public void UpdatePlayerStats()
+    /// <summary>
+    /// This method is called automatically when `coinsCarried.Value` changes.
+    /// It's the ideal place to update the UI, backpack model, and player speed.
+    /// </summary>
+    private void OnCoinsCarriedChanged(int previousValue, int newValue)
     {
         UpdateBackpackModel();
         UpdateMoveSpeed();
     }
 
-    public void UpdateMoveSpeed()
-    {
-        float newSpeed = baseMoveSpeed - (coinsCarried.Value * speedReductionPerCoin);
-        moveSpeed = Mathf.Max(1f, newSpeed);
-    }
-
+    /// <summary>
+    /// Updates the size of the backpack model based on the number of coins carried.
+    /// </summary>
     private void UpdateBackpackModel()
     {
         if (backpackTransform == null) return;
@@ -228,9 +252,21 @@ public class PlayerMovement : NetworkBehaviour
         }
     }
 
+    /// <summary>
+    /// Updates the player's movement speed based on the number of coins carried.
+    /// </summary>
+    public void UpdateMoveSpeed()
+    {
+        float newSpeed = baseMoveSpeed - (coinsCarried.Value * speedReductionPerCoin);
+        moveSpeed = Mathf.Max(1f, newSpeed);
+    }
+
+    /// <summary>
+    /// Detects if a coin enters the collection area.
+    /// </summary>
     void OnTriggerEnter(Collider other)
     {
-        if (other.CompareTag("Coin"))
+        if (IsOwner && other.CompareTag("Coin"))
         {
             Coin coin = other.GetComponent<Coin>();
             if (coin != null)
@@ -240,14 +276,23 @@ public class PlayerMovement : NetworkBehaviour
         }
     }
 
+    /// <summary>
+    /// Clears the coin reference when the player exits the collection area.
+    /// </summary>
     void OnTriggerExit(Collider other)
     {
-        if (other.CompareTag("Coin"))
+        if (IsOwner && other.CompareTag("Coin"))
         {
             if (_currentNearbyCoin != null && _currentNearbyCoin.gameObject == other.gameObject)
             {
                 _currentNearbyCoin = null;
             }
         }
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        base.OnNetworkDespawn();
+        coinsCarried.OnValueChanged -= OnCoinsCarriedChanged;
     }
 }

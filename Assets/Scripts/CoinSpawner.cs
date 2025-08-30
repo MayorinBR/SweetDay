@@ -106,11 +106,12 @@ public class CoinSpawner : NetworkBehaviour
         }
     }
 
-    public void SpawnSingleCoin(Vector3 position, Quaternion rotation)
+    [ServerRpc(RequireOwnership = false)]
+    public void SpawnSingleCoinServerRpc(Vector3 position, Quaternion rotation)
     {
         if (!IsServer) return;
 
-        // Use a rotação de spawn configurada para todas as moedas
+        // 生成設定を適用
         Quaternion desiredSpawnRotation = Quaternion.Euler(spawnRotationEuler);
 
         GameObject newCoin = Instantiate(coinPrefab, position, desiredSpawnRotation);

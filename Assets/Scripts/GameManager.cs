@@ -32,7 +32,6 @@ public class GameManager : NetworkBehaviour
         {
             coinSpawner.SpawnCoins();
             SpawnGuards();
-            SpawnPlayersForConnectedClients();
         }
 
         // Atualiza UI inicial
@@ -164,6 +163,13 @@ public class GameManager : NetworkBehaviour
                 StartCoroutine(ReactivateButtonAfterDelay(buttonSpawner, 5f));
             }
         }
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    public void AddScoreServerRpc(int value)
+    {
+        if (gameEnded) return;
+        score.Value += value;
     }
 
     private IEnumerator ReactivateButtonAfterDelay(ButtonSpawner button, float delay)

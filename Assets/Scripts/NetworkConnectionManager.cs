@@ -2,6 +2,8 @@
 using Unity.Netcode;
 using TMPro;
 using Unity.Netcode.Transports.UTP;
+using System.Net.Sockets;
+using System.Net;
 
 public class NetworkConnectionManager : MonoBehaviour
 {
@@ -10,12 +12,25 @@ public class NetworkConnectionManager : MonoBehaviour
     public GameObject loadingPanel;
     public GameObject inGameUI;
 
+    void Awake()
+    {
+        // Certifica-se de que o singleton do NetworkManager existe
+        if (NetworkManager.Singleton != null)
+        {
+            // Registra callbacks de eventos de rede
+            NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
+            NetworkManager.Singleton.OnClientDisconnectCallback += OnClientDisconnected;
+            NetworkManager.Singleton.OnServerStarted += OnServerStarted;
+        }
+    }
+
     void Start()
     {
-        // Registra callbacks de eventos de rede
-        NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
-        NetworkManager.Singleton.OnClientDisconnectCallback += OnClientDisconnected;
-        NetworkManager.Singleton.OnServerStarted += OnServerStarted;
+        // Ao iniciar, tenta preencher o campo de IP com o IP local para o host
+        if (ipInputField != null)
+        {
+            ipInputField.text = GetLocalIPAddress();
+        }
     }
 
     public void StartHost()
@@ -40,6 +55,8 @@ public class NetworkConnectionManager : MonoBehaviour
         else
         {
             Debug.LogError("Por favor, insira um endereço IP válido");
+            loadingPanel.SetActive(false);
+            connectionPanel.SetActive(true);
         }
     }
 
@@ -54,25 +71,18 @@ public class NetworkConnectionManager : MonoBehaviour
     {
         Debug.Log($"Cliente conectado: {clientId}");
 
-        if (NetworkManager.Singleton.IsHost || NetworkManager.Singleton.IsServer)
-        {
-            // Host/Server já tem a UI de jogo ativa
-        }
-        else
-        {
-            // Cliente mostra UI de jogo quando conecta
-            loadingPanel.SetActive(false);
-            inGameUI.SetActive(true);
-        }
+        // Ativa a UI de jogo quando um cliente/host se conecta.
+        loadingPanel.SetActive(false);
+        inGameUI.SetActive(true);
     }
 
     private void OnClientDisconnected(ulong clientId)
     {
         Debug.Log($"Cliente desconectado: {clientId}");
 
-        if (!NetworkManager.Singleton.IsServer && !NetworkManager.Singleton.IsHost)
+        if (NetworkManager.Singleton != null && !NetworkManager.Singleton.IsServer && !NetworkManager.Singleton.IsHost)
         {
-            // Volta para o menu se for cliente
+            // Volta para o menu se for cliente e se desconectar
             loadingPanel.SetActive(false);
             connectionPanel.SetActive(true);
         }
@@ -91,6 +101,20 @@ public class NetworkConnectionManager : MonoBehaviour
         connectionPanel.SetActive(true);
         inGameUI.SetActive(false);
         loadingPanel.SetActive(false);
+    }
+
+    // Método para obter o endereço IP local da máquina
+    private string GetLocalIPAddress()
+    {
+        var host = Dns.GetHostEntry(Dns.GetHostName());
+        foreach (var ip in host.AddressList)
+        {
+            if (ip.AddressFamily == AddressFamily.InterNetwork)
+            {
+                return ip.ToString();
+            }
+        }
+        return "127.0.0.1"; // Retorna o IP de loopback se o IP local não for encontrado
     }
 
     void OnDestroy()
