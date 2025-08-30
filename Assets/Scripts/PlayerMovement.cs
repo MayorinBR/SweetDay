@@ -21,15 +21,19 @@ public class PlayerMovement : NetworkBehaviour
 
     public NetworkVariable<int> coinsCarried = new NetworkVariable<int>(0);
 
-    // VARIÁVEIS DE REDE PARA SINCRONIZAÇÃO DE MOVIMENTO
-    public NetworkVariable<Vector3> NetworkPosition = new NetworkVariable<Vector3>();
-    public NetworkVariable<Quaternion> NetworkRotation = new NetworkVariable<Quaternion>();
+    // Variáveis para suavização de movimento em clientes remotos
+    private Vector3 _networkPosition;
+    private Quaternion _networkRotation;
+    public float networkMovementSmoothness = 5f;
 
     private Coin _currentNearbyCoin;
     private bool _isCollecting = false;
 
     private CoinSpawner _coinSpawner;
     private GameManager _gameManager;
+
+    private float _lastPositionUpdateTime = 0f;
+    private const float POSITION_UPDATE_INTERVAL = 0.1f; // 10 updates por segundo
 
     void Start()
     {
@@ -56,9 +60,17 @@ public class PlayerMovement : NetworkBehaviour
                 cameraFollow.Target = this.transform;
             }
 
-            // CORREÇÃO: Define a posição de spawn para o dono (owner) do objeto
-            // Garante que o jogador comece na altura correta (y = 0.58)
-            transform.position = new Vector3(transform.position.x, 0.58f, transform.position.z);
+            // Garante que o jogador está na posição correta
+            if (IsServer)
+            {
+                transform.position = new Vector3(transform.position.x, 0.58f, transform.position.z);
+            }
+        }
+        else
+        {
+            // Clientes remotos começam com a posição/rotação atual
+            _networkPosition = transform.position;
+            _networkRotation = transform.rotation;
         }
     }
 
@@ -72,16 +84,14 @@ public class PlayerMovement : NetworkBehaviour
 
     void Update()
     {
-        // Se o objeto não é o local, ele simplesmente atualiza sua posição
-        // com base nas variáveis de rede. Isso sincroniza o movimento.
         if (!IsOwner)
         {
-            transform.position = NetworkPosition.Value;
-            transform.rotation = NetworkRotation.Value;
+            // Interpolação suave para clientes remotos
+            transform.position = Vector3.Lerp(transform.position, _networkPosition, networkMovementSmoothness * Time.deltaTime);
+            transform.rotation = Quaternion.Lerp(transform.rotation, _networkRotation, networkMovementSmoothness * Time.deltaTime);
             return;
         }
 
-        // Se o jogador é o local (dono), ele pode se mover.
         if (_isCollecting)
         {
             _characterController.Move(Vector3.zero);
@@ -97,12 +107,21 @@ public class PlayerMovement : NetworkBehaviour
         {
             Quaternion toRotation = Quaternion.LookRotation(direction, Vector3.up);
             transform.rotation = Quaternion.RotateTowards(transform.rotation, toRotation, rotationSpeed * Time.deltaTime);
-
             _characterController.Move(direction * moveSpeed * Time.deltaTime);
-        }
 
-        // Atualiza as variáveis de rede para que o servidor possa replicar o movimento.
-        UpdatePositionServerRpc(transform.position, transform.rotation);
+            // Atualiza posição com mais frequência quando se movendo
+            if (Time.time - _lastPositionUpdateTime >= POSITION_UPDATE_INTERVAL)
+            {
+                UpdatePositionServerRpc(transform.position, transform.rotation);
+                _lastPositionUpdateTime = Time.time;
+            }
+        }
+        else if (Time.time - _lastPositionUpdateTime >= POSITION_UPDATE_INTERVAL * 2)
+        {
+            // Atualiza menos frequentemente quando parado
+            UpdatePositionServerRpc(transform.position, transform.rotation);
+            _lastPositionUpdateTime = Time.time;
+        }
 
         if (Input.GetKeyDown(KeyCode.X))
         {
@@ -121,12 +140,19 @@ public class PlayerMovement : NetworkBehaviour
         }
     }
 
-    // NOVO RPC para o cliente enviar sua posição/rotação ao servidor.
     [ServerRpc]
     public void UpdatePositionServerRpc(Vector3 position, Quaternion rotation)
     {
-        NetworkPosition.Value = position;
-        NetworkRotation.Value = rotation;
+        UpdatePositionClientRpc(position, rotation);
+    }
+
+    [ClientRpc]
+    public void UpdatePositionClientRpc(Vector3 position, Quaternion rotation)
+    {
+        if (IsOwner) return;
+
+        _networkPosition = position;
+        _networkRotation = rotation;
     }
 
     [ServerRpc]
@@ -191,7 +217,6 @@ public class PlayerMovement : NetworkBehaviour
         else
         {
             int index = coinsCarried.Value - 1;
-
             if (index >= 0 && index < backpackScales.Length)
             {
                 backpackTransform.localScale = backpackScales[index];

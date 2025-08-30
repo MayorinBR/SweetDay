@@ -1,7 +1,6 @@
 ﻿using UnityEngine;
 using Unity.Netcode;
 using System.Collections;
-using System.Collections.Generic;
 using UnityEngine.SceneManagement;
 
 public class GameManager : NetworkBehaviour
@@ -33,6 +32,15 @@ public class GameManager : NetworkBehaviour
         {
             coinSpawner.SpawnCoins();
             SpawnGuards();
+            SpawnPlayersForConnectedClients();
+        }
+
+        // Atualiza UI inicial
+        if (_uiManager != null)
+        {
+            _uiManager.UpdateScoreUI(score.Value);
+            _uiManager.UpdateLivesUI(playerLives.Value);
+            _uiManager.UpdateTimerUI(gameTimer.Value);
         }
     }
 
@@ -56,6 +64,33 @@ public class GameManager : NetworkBehaviour
                 EndGame(false);
             }
         }
+    }
+
+    private void SpawnPlayersForConnectedClients()
+    {
+        if (!IsServer) return;
+
+        foreach (var client in NetworkManager.Singleton.ConnectedClientsList)
+        {
+            SpawnPlayer(client.ClientId);
+        }
+    }
+
+    private void SpawnPlayer(ulong clientId)
+    {
+        if (!IsServer) return;
+
+        Transform spawnPoint = GetAvailableSpawnPoint();
+        GameObject player = Instantiate(playerPrefab, spawnPoint.position, spawnPoint.rotation);
+
+        NetworkObject playerNetworkObject = player.GetComponent<NetworkObject>();
+        playerNetworkObject.SpawnAsPlayerObject(clientId);
+    }
+
+    private Transform GetAvailableSpawnPoint()
+    {
+        // Lógica simples - pode melhorar com verificação de ocupação
+        return playerSpawnPoints[Random.Range(0, playerSpawnPoints.Length)];
     }
 
     private void OnScoreChanged(int oldScore, int newScore)
@@ -103,10 +138,15 @@ public class GameManager : NetworkBehaviour
         }
         else
         {
-            var playerObject = NetworkManager.Singleton.SpawnManager.GetLocalPlayerObject();
-            if (playerObject != null)
+            // Respawn do jogador
+            foreach (var client in NetworkManager.Singleton.ConnectedClientsList)
             {
-                playerObject.transform.position = new Vector3(0, 1, 0);
+                NetworkObject playerObject = client.PlayerObject;
+                if (playerObject != null)
+                {
+                    Transform spawnPoint = GetAvailableSpawnPoint();
+                    playerObject.transform.position = spawnPoint.position;
+                }
             }
         }
     }
@@ -147,16 +187,7 @@ public class GameManager : NetworkBehaviour
         Debug.Log("Game Over! You " + (won ? "Won!" : "Lost!"));
         ShowEndGamePanelClientRpc(won);
 
-        foreach (var client in NetworkManager.Singleton.ConnectedClientsList)
-        {
-            var player = client.PlayerObject.GetComponent<PlayerMovement>();
-            if (player != null)
-            {
-                // Implemente um RPC ou método para desabilitar o movimento se necessário
-            }
-        }
-
-        StartCoroutine(RestartGameAfterDelay(3f));
+        StartCoroutine(RestartGameAfterDelay(5f));
     }
 
     private IEnumerator RestartGameAfterDelay(float delay)
@@ -169,15 +200,13 @@ public class GameManager : NetworkBehaviour
     public void SpawnGuards()
     {
         if (!IsServer) return;
-        // Adicione aqui a lógica para spawnar os guardas
+        // Implemente a lógica de spawn dos guardas aqui
     }
 
-    // ⭐ CORREÇÃO: スコアを減らすための新しいRPCメソッドを追加
     [ServerRpc(RequireOwnership = false)]
     public void SubtractScoreServerRpc(int value)
     {
         if (gameEnded) return;
-
         score.Value = Mathf.Max(0, score.Value - value);
     }
 }
