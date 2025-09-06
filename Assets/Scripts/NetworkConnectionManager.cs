@@ -1,120 +1,194 @@
 ﻿using UnityEngine;
 using Unity.Netcode;
-using TMPro;
+using System.Collections.Generic;
+using Unity.Services.Core;
+using Unity.Services.Authentication;
+using Unity.Services.Lobbies;
+using Unity.Services.Lobbies.Models;
+using Unity.Services.Relay;
+using Unity.Networking.Transport.Relay;
+using System.Threading.Tasks;
+using Unity.Services.Relay.Models;
 using Unity.Netcode.Transports.UTP;
-using System.Net.Sockets;
-using System.Net;
 
 public class NetworkConnectionManager : MonoBehaviour
 {
-    public TMP_InputField ipInputField;
-    public GameObject connectionPanel;
-    public GameObject loadingPanel;
-    public GameObject inGameUI;
+    private Lobby _currentLobby;
+    private string _playerLobbyId;
+    private string _joinCode = "";
+    private string _lobbyCode = "";
 
     void Awake()
     {
-        // Certifica-se de que o singleton do NetworkManager existe
         if (NetworkManager.Singleton != null)
         {
-            // Registra callbacks de eventos de rede
             NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
             NetworkManager.Singleton.OnClientDisconnectCallback += OnClientDisconnected;
             NetworkManager.Singleton.OnServerStarted += OnServerStarted;
         }
     }
 
-    void Start()
+    async void Start()
     {
-        // Ao iniciar, tenta preencher o campo de IP com o IP local para o host
-        if (ipInputField != null)
+        try
         {
-            ipInputField.text = GetLocalIPAddress();
+            await UnityServices.InitializeAsync();
+            await AuthenticationService.Instance.SignInAnonymouslyAsync();
+            _playerLobbyId = AuthenticationService.Instance.PlayerId;
+            Debug.Log($"Autenticação anônima bem-sucedida! Player ID: {_playerLobbyId}");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Falha na inicialização do Unity Services: {e.Message}");
         }
     }
 
-    public void StartHost()
+    void OnGUI()
     {
-        connectionPanel.SetActive(false);
-        loadingPanel.SetActive(true);
-        NetworkManager.Singleton.StartHost();
-    }
-
-    public void StartClient()
-    {
-        if (!string.IsNullOrEmpty(ipInputField.text))
+        if (NetworkManager.Singleton == null)
         {
-            // Configura o transporte com o IP inserido
-            var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-            transport.SetConnectionData(ipInputField.text, 7777);
+            return;
+        }
 
-            connectionPanel.SetActive(false);
-            loadingPanel.SetActive(true);
-            NetworkManager.Singleton.StartClient();
+        GUILayout.BeginArea(new Rect(10, 10, 300, 400));
+
+        if (!NetworkManager.Singleton.IsClient && !NetworkManager.Singleton.IsServer)
+        {
+            StartButtons();
         }
         else
         {
-            Debug.LogError("Por favor, insira um endereço IP válido");
-            loadingPanel.SetActive(false);
-            connectionPanel.SetActive(true);
+            StatusLabels();
+
+            if (GUILayout.Button("Disconnect"))
+            {
+                Disconnect();
+            }
+        }
+
+        GUILayout.EndArea();
+    }
+
+    void StartButtons()
+    {
+        if (GUILayout.Button("Host"))
+        {
+            StartHost();
+        }
+
+        GUILayout.Label("OU");
+
+        GUILayout.BeginHorizontal();
+        _joinCode = GUILayout.TextField(_joinCode, 6);
+        if (GUILayout.Button("Client"))
+        {
+            StartClient();
+        }
+        GUILayout.EndHorizontal();
+
+        GUILayout.Label("OU");
+
+        if (GUILayout.Button("Server"))
+        {
+            StartServer();
+        }
+    }
+
+    void StatusLabels()
+    {
+        var mode = NetworkManager.Singleton.IsHost ? "Host" : NetworkManager.Singleton.IsServer ? "Server" : "Client";
+        GUILayout.Label("Modo: " + mode);
+
+        if (NetworkManager.Singleton.IsHost)
+        {
+            GUILayout.Label("Código do Lobby: " + _lobbyCode);
+        }
+    }
+
+    public async void StartHost()
+    {
+        try
+        {
+            int maxPlayers = 4;
+            var allocation = await RelayService.Instance.CreateAllocationAsync(maxPlayers);
+            var relayJoinCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
+            Debug.Log($"Relay join code: {relayJoinCode}");
+
+            var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
+            transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, "dtls"));
+
+            CreateLobbyOptions options = new CreateLobbyOptions
+            {
+                IsPrivate = true,
+                Data = new Dictionary<string, DataObject>
+                {
+                    { "RelayJoinCode", new DataObject(DataObject.VisibilityOptions.Member, relayJoinCode) }
+                }
+            };
+            _currentLobby = await LobbyService.Instance.CreateLobbyAsync("My Awesome Lobby", maxPlayers, options);
+            _lobbyCode = _currentLobby.LobbyCode;
+            Debug.Log($"Lobby criado com o código: {_currentLobby.LobbyCode}");
+
+            NetworkManager.Singleton.StartHost();
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Erro ao iniciar o host do Lobby/Relay: {e.Message}");
+        }
+    }
+
+    public async void StartClient()
+    {
+        if (string.IsNullOrEmpty(_joinCode))
+        {
+            Debug.LogError("Por favor, insira um código de conexão válido.");
+            return;
+        }
+
+        try
+        {
+            var lobby = await LobbyService.Instance.JoinLobbyByCodeAsync(_joinCode);
+            _currentLobby = lobby;
+            _playerLobbyId = AuthenticationService.Instance.PlayerId;
+
+            string relayJoinCode = _currentLobby.Data["RelayJoinCode"].Value;
+            Debug.Log($"Lobby encontrado. Código do Relay: {relayJoinCode}");
+
+            var joinAllocation = await RelayService.Instance.JoinAllocationAsync(relayJoinCode);
+            var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
+            transport.SetRelayServerData(AllocationUtils.ToRelayServerData(joinAllocation, "dtls"));
+
+            NetworkManager.Singleton.StartClient();
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Erro ao conectar ao Lobby/Relay: {e.Message}");
         }
     }
 
     public void StartServer()
     {
-        connectionPanel.SetActive(false);
-        loadingPanel.SetActive(true);
         NetworkManager.Singleton.StartServer();
     }
 
     private void OnClientConnected(ulong clientId)
     {
         Debug.Log($"Cliente conectado: {clientId}");
-
-        // Ativa a UI de jogo quando um cliente/host se conecta.
-        loadingPanel.SetActive(false);
-        inGameUI.SetActive(true);
     }
 
     private void OnClientDisconnected(ulong clientId)
     {
         Debug.Log($"Cliente desconectado: {clientId}");
-
-        if (NetworkManager.Singleton != null && !NetworkManager.Singleton.IsServer && !NetworkManager.Singleton.IsHost)
-        {
-            // Volta para o menu se for cliente e se desconectar
-            loadingPanel.SetActive(false);
-            connectionPanel.SetActive(true);
-        }
     }
 
     private void OnServerStarted()
     {
         Debug.Log("Servidor iniciado!");
-        loadingPanel.SetActive(false);
-        inGameUI.SetActive(true);
     }
 
     public void Disconnect()
     {
         NetworkManager.Singleton.Shutdown();
-        connectionPanel.SetActive(true);
-        inGameUI.SetActive(false);
-        loadingPanel.SetActive(false);
-    }
-
-    // Método para obter o endereço IP local da máquina
-    private string GetLocalIPAddress()
-    {
-        var host = Dns.GetHostEntry(Dns.GetHostName());
-        foreach (var ip in host.AddressList)
-        {
-            if (ip.AddressFamily == AddressFamily.InterNetwork)
-            {
-                return ip.ToString();
-            }
-        }
-        return "127.0.0.1"; // Retorna o IP de loopback se o IP local não for encontrado
     }
 
     void OnDestroy()
@@ -126,4 +200,20 @@ public class NetworkConnectionManager : MonoBehaviour
             NetworkManager.Singleton.OnServerStarted -= OnServerStarted;
         }
     }
+
+    public async void LeaveLobby()
+    {
+        if (_currentLobby != null)
+        {
+            await LobbyService.Instance.RemovePlayerAsync(_currentLobby.Id, _playerLobbyId);
+            _currentLobby = null;
+        }
+    }
+
+    private RelayServerData CreateRelayHostData(Allocation allocation, string connectionType = "dtls")
+        => AllocationUtils.ToRelayServerData(allocation, connectionType);
+
+    private RelayServerData CreateRelayClientData(JoinAllocation allocation, string connectionType = "dtls")
+        => AllocationUtils.ToRelayServerData(allocation, connectionType);
+
 }
