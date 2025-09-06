@@ -1,168 +1,86 @@
 ﻿using UnityEngine;
-using UnityEngine.UI; // Certifique-se de que este using esteja presente
+using UnityEngine.UI;
+using Unity.Netcode;
+using System.Collections;
 
-/// <summary>
-/// Defines a safe area where the player can stay for a set time to earn coins.
-/// </summary>
-public class ButtonSpawner : MonoBehaviour
+public class ButtonSpawner : NetworkBehaviour
 {
     [Header("Coin Spawner Button Settings")]
-    /// <summary>
-    /// The time (in seconds) the player needs to stay in the zone to trigger coin spawn.
-    /// </summary>
     public float timeToStayInZone = 5f;
-
-    /// <summary>
-    /// The number of coins to spawn when the time is complete.
-    /// </summary>
     public int coinsToSpawn = 5;
-
-    /// <summary>
-    /// The radius around the zone's center where coins will be spawned.
-    /// </summary>
     public float coinSpawnRadius = 3f;
 
     [Header("UI Settings")]
-    /// <summary>
-    /// Prefab for the progress bar UI that appears over the player.
-    /// This should be a Canvas with a Slider component.
-    /// </summary>
     public GameObject progressBarUIPrefab;
-
-    /// <summary>
-    /// Offset for the progress bar UI position relative to the player.
-    /// </summary>
     public Vector3 progressBarOffset = new Vector3(0, 2f, 0);
 
     private float _currentStayTime = 0f;
-    private bool _playerInZone = false;
-    private GameObject _playerGameObject; // Store reference to the player
-    private Slider _currentProgressBarInstance; // Reference to the instantiated progress bar UI
-    private CoinSpawner _coinSpawner; // Reference to the CoinSpawner script
+    private GameObject _playerGameObject;
+    private Slider _currentProgressBarInstance;
+    private GameManager _gameManager;
 
     void Start()
     {
-        // Get reference to the CoinSpawner in the scene
-        _coinSpawner = Object.FindFirstObjectByType<CoinSpawner>();
-        if (_coinSpawner == null)
-        {
-            Debug.LogError("CoinSpawner not found in the scene! Please add a CoinSpawner GameObject.");
-        }
-
-        // Ensure the trigger is set up
-        Collider collider = GetComponent<Collider>();
-        if (collider == null || !collider.isTrigger)
-        {
-            Debug.LogWarning("ButtonSpawner needs a Collider marked as 'Is Trigger' to function.");
-        }
+        _gameManager = FindFirstObjectByType<GameManager>();
     }
 
-    /// <summary>
-    /// Called when another collider enters this trigger.
-    /// </summary>
-    /// <param name="other">The other Collider involved in this collision.</param>
     void OnTriggerEnter(Collider other)
     {
-        if (other.CompareTag("Player"))
+        // Verifica se o objeto que entrou é um jogador e se ele é o jogador local deste cliente
+        if (other.CompareTag("Player") && other.GetComponent<NetworkObject>().IsOwner)
         {
-            _playerInZone = true;
             _playerGameObject = other.gameObject;
-            _currentStayTime = 0f; // Reset time when player enters
-            Debug.Log("Player entered safe zone. Timer started.");
-            ShowProgressBar(_playerGameObject.transform);
+            ShowProgressBar();
         }
     }
 
-    /// <summary>
-    /// Called once per frame while another collider is staying in this trigger.
-    /// </summary>
-    /// <param name="other">The other Collider involved in this collision.</param>
+    void OnTriggerExit(Collider other)
+    {
+        // Verifica se o objeto que saiu é um jogador e se ele é o jogador local deste cliente
+        if (other.CompareTag("Player") && other.GetComponent<NetworkObject>().IsOwner)
+        {
+            _currentStayTime = 0f;
+            HideProgressBar();
+        }
+    }
+
     void OnTriggerStay(Collider other)
     {
-        if (other.CompareTag("Player") && _playerInZone)
+        // CORRIGIDO: Agora verificamos se o jogador (other) é o dono deste cliente.
+        // O `ButtonSpawner` em si não é de propriedade do cliente, então IsOwner será falso para ele.
+        if (other.CompareTag("Player") && other.GetComponent<NetworkObject>().IsOwner)
         {
             _currentStayTime += Time.deltaTime;
             UpdateProgressBar(_currentStayTime / timeToStayInZone);
 
             if (_currentStayTime >= timeToStayInZone)
             {
-                Debug.Log("Player stayed long enough! Spawning coins.");
-                SpawnCoinsNearArea();
-                _currentStayTime = 0f; // Reset for next cycle or disable zone
-                _playerInZone = false; // Player effectively 'completes' the cycle
-                HideProgressBar(); // Hide and destroy the bar after completion
-                // Optionally, you might want to disable this safe zone temporarily
-                gameObject.SetActive(false);
-                Invoke("ReactivateSafeZone", 10f); // Example: Reactivate after 10 seconds
+                HideProgressBar();
+                _currentStayTime = 0f;
+                // O cliente solicita ao servidor para spawnar as moedas via RPC.
+                if (_gameManager != null)
+                {
+                    _gameManager.SpawnCoinsFromButtonServerRpc(
+                        new NetworkObjectReference(this.NetworkObject),
+                        transform.position,
+                        coinsToSpawn,
+                        coinSpawnRadius);
+                }
             }
         }
     }
 
-    /// <summary>
-    /// Called when another collider exits this trigger.
-    /// </summary>
-    /// <param name="other">The other Collider involved in this collision.</param>
-    void OnTriggerExit(Collider other)
+    [ClientRpc]
+    public void SetButtonActiveClientRpc(bool isActive)
     {
-        if (other.CompareTag("Player"))
-        {
-            _playerInZone = false;
-            _currentStayTime = 0f; // Reset time when player leaves
-            Debug.Log("Player exited safe zone. Timer reset.");
-            HideProgressBar(); // Hide and destroy the bar if player leaves
-        }
+        gameObject.SetActive(isActive);
     }
 
-    /// <summary>
-    /// Spawns coins around the zone's position using the CoinSpawner.
-    /// </summary>
-    private void SpawnCoinsNearArea()
+    private void ShowProgressBar()
     {
-        CoinSpawner spawner = Object.FindFirstObjectByType<CoinSpawner>(); // Find the CoinSpawner in the scene
-        if (spawner != null)
-        {
-            spawner.SpawnCoinsAtLocation(transform.position, coinsToSpawn, coinSpawnRadius);
-        }
-        else
-        {
-            Debug.LogError("CoinSpawner not found in the scene! Cannot spawn coins.");
-        }
-    }
-
-    /// <summary>
-    /// Shows and initializes the progress bar UI over the player.
-    /// </summary>
-    /// <param name="playerTransform">The transform of the player GameObject.</param>
-    private void ShowProgressBar(Transform playerTransform)
-    {
-        if (progressBarUIPrefab == null)
-        {
-            Debug.LogWarning("Progress Bar UI Prefab not assigned to SafeZone!");
-            return;
-        }
-
-        // --- CORREÇÃO 1: Garante que apenas uma barra exista ---
-        // Se já existe uma instância da barra, destrua-a antes de criar uma nova.
-        // Isso evita múltiplas barras.
-        if (_currentProgressBarInstance != null)
-        {
-            Destroy(_currentProgressBarInstance.gameObject);
-            _currentProgressBarInstance = null; // Limpa a referência
-        }
-        // --- FIM DA CORREÇÃO 1 ---
-
-        // Instantiate the progress bar and parent it to the player
-        GameObject progressBarGO = Instantiate(progressBarUIPrefab, playerTransform);
-        progressBarGO.transform.localPosition = progressBarOffset; // Position relative to player
-
-        // --- CORREÇÃO 2: Fixa a rotação da barra de progresso ---
-        // Define a rotação local da barra para Quaternion.identity (sem rotação)
-        // Isso fará com que ela não gire com o player.
-        progressBarGO.transform.localRotation = Quaternion.identity;
-        // --- FIM DA CORREÇÃO 2 ---
-
-        _currentProgressBarInstance = progressBarGO.GetComponentInChildren<Slider>(); // Get the Slider component
-
+        if (_playerGameObject == null || progressBarUIPrefab == null) return;
+        GameObject progressBarGO = Instantiate(progressBarUIPrefab, _playerGameObject.transform.position + progressBarOffset, Quaternion.identity);
+        _currentProgressBarInstance = progressBarGO.GetComponentInChildren<Slider>();
         if (_currentProgressBarInstance != null)
         {
             _currentProgressBarInstance.gameObject.SetActive(true);
@@ -170,16 +88,8 @@ public class ButtonSpawner : MonoBehaviour
             _currentProgressBarInstance.maxValue = 1;
             _currentProgressBarInstance.value = 0;
         }
-        else
-        {
-            Debug.LogError("No Slider component found in ProgressBar UI Prefab or its children!");
-        }
     }
 
-    /// <summary>
-    /// Updates the value of the progress bar.
-    /// </summary>
-    /// <param name="progress">The progress value (0 to 1).</param>
     private void UpdateProgressBar(float progress)
     {
         if (_currentProgressBarInstance != null)
@@ -188,9 +98,6 @@ public class ButtonSpawner : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Hides and destroys the progress bar UI.
-    /// </summary>
     private void HideProgressBar()
     {
         if (_currentProgressBarInstance != null)
@@ -198,14 +105,5 @@ public class ButtonSpawner : MonoBehaviour
             Destroy(_currentProgressBarInstance.gameObject);
             _currentProgressBarInstance = null;
         }
-    }
-
-    /// <summary>
-    /// Reactivate the zone after a delay
-    /// </summary>
-    private void ReactivateSafeZone()
-    {
-        gameObject.SetActive(true);
-        Debug.Log("Safe zone reactivated.");
     }
 }
