@@ -63,8 +63,16 @@ public class PlayerMovement : NetworkBehaviour
 
     private bool _isDashing = false;
     private const float DASH_COOLDOWN = 5.0f; // Cooldown fixo de 5.0 segundos
+    private float _localDashCooldown = 0f;
+    private bool _dashOnCooldown = false;
     private const float DASH_DURATION = 0.15f; // Duração curta para o dash
     private const float DASH_DISTANCE_MULTIPLIER = 1.5f; // Aumenta a distância percorrida
+
+    [Header("Mobile Input State")]
+    private Vector2 _mobileMoveVector = Vector2.zero;
+    private bool _dashPressed = false; // Corresponde ao Z (Dash) no seu mapeamento
+    private bool _collectPressed = false; // Corresponde ao X (Coletar) no seu mapeamento
+    private bool _dropPressed = false; // Corresponde ao C (Soltar) no seu mapeamento
 
     void Awake()
     {
@@ -104,6 +112,21 @@ public class PlayerMovement : NetworkBehaviour
             Debug.LogError("CharacterController not found on player GameObject. Please add one!");
         }
 
+        if (IsOwner)
+        {
+            // Inicializa cooldown com valor da NetworkVariable
+            _localDashCooldown = DashCooldownRemaining.Value;
+            _dashOnCooldown = DashCooldownRemaining.Value > 0f;
+
+            // Encontra o UIManager na cena
+            UIManager uiManager = FindFirstObjectByType<UIManager>();
+            if (uiManager != null)
+            {
+                // Passa a referência desta instância (o jogador local)
+                uiManager.SetLocalPlayerMovement(this);
+            }
+        }
+
         // Find CoinSpawner and GameManager in the scene
         _coinSpawner = FindFirstObjectByType<CoinSpawner>();
         _gameManager = FindFirstObjectByType<GameManager>();
@@ -111,9 +134,22 @@ public class PlayerMovement : NetworkBehaviour
         // Subscribe to the network variable change event
         coinsCarried.OnValueChanged += OnCoinsCarriedChanged;
 
+        // Subscreve também para mudanças no DashCooldownRemaining
+        DashCooldownRemaining.OnValueChanged += OnDashCooldownChanged;
+
         // Ensure the initial state is correct for all clients
         UpdateBackpackModel();
-        UpdateMoveSpeed(); // Atualiza a velocidade inicial
+        UpdateMoveSpeed();
+    }
+
+    private void OnDashCooldownChanged(float oldValue, float newValue)
+    {
+        // Atualiza o cooldown local quando a NetworkVariable mudar
+        if (IsOwner && Mathf.Abs(_localDashCooldown - newValue) > 0.1f)
+        {
+            _localDashCooldown = newValue;
+            _dashOnCooldown = newValue > 0f;
+        }
     }
 
     private void Start()
@@ -127,42 +163,78 @@ public class PlayerMovement : NetworkBehaviour
             _scoreToWin = _gameManager.scoreToWin;
             CalculateProgressionFactor();
         }
+
+        // Inicializa o cooldown local com o valor da NetworkVariable
+        if (IsOwner && DashCooldownRemaining.Value > 0f)
+        {
+            _localDashCooldown = DashCooldownRemaining.Value;
+            _dashOnCooldown = true;
+        }
     }
+
+    // MÉTODOS PÚBLICOS PARA CONEXÃO DA UI MÓVEL
+    public void SetMoveVector(Vector2 direction) => _mobileMoveVector = direction;
+    public void OnDashButtonClicked() => _dashPressed = true; // Botão Z
+    public void OnCollectButtonClicked() => _collectPressed = true; // Botão X
+    public void OnDropButtonClicked() => _dropPressed = true; // Botão C
 
     void Update()
     {
-        if (_isCollecting)
+        if (IsOwner)
         {
-            return;
-        }
-
-        if (IsOwner && DashCooldownRemaining.Value > 0f)
-        {
-            DashCooldownRemaining.Value -= Time.deltaTime;
-            if (DashCooldownRemaining.Value < 0f)
+            if (DashCooldownRemaining.Value > 0f)
             {
-                DashCooldownRemaining.Value = 0f;
+                DashCooldownRemaining.Value -= Time.deltaTime;
+
+                // Garante que o valor não se torne negativo
+                if (DashCooldownRemaining.Value < 0f)
+                {
+                    DashCooldownRemaining.Value = 0f;
+                }
             }
         }
 
-        if (!IsOwner)
+        // Apenas para o movimento durante a coleta
+        if (_isCollecting)
         {
-            // Interpolação para suavizar o movimento de clientes remotos
-            transform.position = Vector3.Lerp(transform.position, _networkPosition, Time.deltaTime * networkMovementSmoothness);
-            transform.rotation = Quaternion.Slerp(transform.rotation, _networkRotation, Time.deltaTime * networkMovementSmoothness);
+            // Ainda aplica a gravidade mesmo durante a coleta
+            ApplyGravity();
+
+            // Atualiza interpolação para clientes remotos
+            if (!IsOwner)
+            {
+                transform.position = Vector3.Lerp(transform.position, _networkPosition, Time.deltaTime * networkMovementSmoothness);
+                transform.rotation = Quaternion.Slerp(transform.rotation, _networkRotation, Time.deltaTime * networkMovementSmoothness);
+            }
+
             return;
         }
 
-        // Adicione esta verificação para permitir o movimento apenas se o jogo tiver começado
+        // ATUALIZAÇÃO DO COOLDOWN LOCAL (para todos os Owners)
+        /*if (_localDashCooldown > 0f)
+        {
+            _localDashCooldown -= Time.deltaTime;
+            if (_localDashCooldown <= 0f)
+            {
+                _localDashCooldown = 0f;
+                _dashOnCooldown = false;
+            }
+
+            // Se for Host/Server, atualiza a NetworkVariable
+            if (IsServer)
+            {
+                DashCooldownRemaining.Value = _localDashCooldown;
+            }
+            else
+            {
+                // Client apenas: Sincroniza com server periodicamente
+                SyncDashCooldownServerRpc(_localDashCooldown);
+            }
+        }*/
+
         if (_gameManager != null && !_gameManager.gameStarted.Value)
         {
             return;
-        }
-
-        ApplyGravity();
-        if (!_isDashing)
-        {
-            HandlePlayerInput();
         }
 
         // Envia a posição e rotação para o servidor
@@ -172,11 +244,19 @@ public class PlayerMovement : NetworkBehaviour
             _lastPositionUpdateTime = Time.time;
         }
 
-        if (Input.GetKeyDown(KeyCode.Z) && DashCooldownRemaining.Value <= 0f && IsRunner.Value)
-        {
-            DashServerRpc();
-        }
+        ApplyGravity();
+        HandlePlayerInput();
     }
+    /*
+    [ServerRpc]
+    private void SyncDashCooldownServerRpc(float clientCooldown)
+    {
+        // Server recebe o cooldown do client e atualiza a NetworkVariable
+        if (clientCooldown < DashCooldownRemaining.Value)
+        {
+            DashCooldownRemaining.Value = clientCooldown;
+        }
+    }*/
 
     /// <summary>
     /// Aplica a gravidade ao CharacterController.
@@ -218,12 +298,31 @@ public class PlayerMovement : NetworkBehaviour
     /// <summary>
     /// Captures player input and moves the CharacterController.
     /// </summary>
-    private void HandlePlayerInput()
+    public void HandlePlayerInput()
     {
+        // Apenas o Owner deve processar input
+        if (!IsOwner || !IsRunner.Value) return;
+
         if (_characterController == null) return;
 
-        float horizontalInput = Input.GetAxis("Horizontal");
-        float verticalInput = Input.GetAxis("Vertical");
+        // 1. INPUT DE MOVIMENTO (PC e Mobile)
+        float horizontalInput = 0f;
+        float verticalInput = 0f;
+
+        // Tenta obter o input do Mobile Input State primeiro
+        bool isMobileInput = _mobileMoveVector.magnitude > 0.1f;
+
+        if (isMobileInput)
+        {
+            horizontalInput = _mobileMoveVector.x;
+            verticalInput = _mobileMoveVector.y;
+        }
+        else
+        {
+            // Fallback: Usa o input do PC
+            horizontalInput = Input.GetAxis("Horizontal");
+            verticalInput = Input.GetAxis("Vertical");
+        }
 
         // Calcule o movimento horizontal (X e Z)
         Vector3 movement = new Vector3(horizontalInput, 0f, verticalInput);
@@ -242,8 +341,9 @@ public class PlayerMovement : NetworkBehaviour
             transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
         }
 
-        // Input logic for collecting a coin ('X')
-        if (Input.GetKeyDown(KeyCode.X))
+        // Input logic for collecting a coin ('X' PC or Mobile Button)
+        bool collectInput = Input.GetKeyDown(KeyCode.X) || _collectPressed;
+        if (collectInput)
         {
             if (_currentNearbyCoin != null && _currentNearbyCoin.IsSpawned)
             {
@@ -256,8 +356,11 @@ public class PlayerMovement : NetworkBehaviour
             }
         }
 
-        // Input logic for dropping a coin ('C')
-        if (Input.GetKeyDown(KeyCode.C))
+        // Input logic for dropping a coin ('C' PC or Mobile Button)
+        bool dropInput = Input.GetKeyDown(KeyCode.C) || _dropPressed;
+
+        // 2. Verifica se há moedas e se o jogador não está em processo de coleta
+        if (dropInput)
         {
             if (coinsCarried.Value > 0)
             {
@@ -268,7 +371,28 @@ public class PlayerMovement : NetworkBehaviour
                 //Debug.Log("You have no coins to drop.");
             }
         }
+
+        // 2. INPUT DE DASH (PC: Z, Mobile: Botão Z)
+        bool pcDashInput = Input.GetKeyDown(KeyCode.Z);
+        bool mobileDashInput = _dashPressed;
+
+        // VERIFICA O COOLDOWN DA NETWORKVARIABLE (em vez do local)
+        if ((pcDashInput || mobileDashInput) && IsRunner.Value &&
+            DashCooldownRemaining.Value <= 0f && !_isDashing && !_isCollecting)
+        {
+            _dashOnCooldown = true;
+            _localDashCooldown = DASH_COOLDOWN;
+
+            Vector3 dashDirection = movement.magnitude > 0.1f ? movement : transform.forward;
+            DashServerRpc(dashDirection);
+        }
+
+        // 3. RESETAR O ESTADO DOS BOTÕES MÓVEIS APÓS A LEITURA
+        _dashPressed = false;
+        _collectPressed = false;
+        _dropPressed = false;
     }
+
 
     // RPC to synchronize player position and rotation
     [ServerRpc(RequireOwnership = false)]
@@ -334,7 +458,7 @@ public class PlayerMovement : NetworkBehaviour
     private void OnCoinsCarriedChanged(int previousValue, int newValue)
     {
         UpdateBackpackModel();
-        UpdateMoveSpeed(); // CORREÇÃO: Chamar o método para atualizar a velocidade
+        UpdateMoveSpeed();
     }
 
     public int ReceiveHitAndDropCoins_Server(CoinSpawner coinSpawner)
@@ -374,6 +498,15 @@ public class PlayerMovement : NetworkBehaviour
         IsInvulnerable.Value = false;
     }
 
+    // PlayerMovement.cs
+    /// <summary>
+    /// Retorna o tempo restante de cooldown (local) para a UI.
+    /// </summary>
+    public float GetLocalDashCooldown()
+    {
+        return _localDashCooldown;
+    }
+
     // ===================================================================
     // Lógica de Dash
     // ===================================================================
@@ -382,21 +515,31 @@ public class PlayerMovement : NetworkBehaviour
     /// Chamado pelo Owner para iniciar o Dash no Servidor.
     /// </summary>
     [ServerRpc]
-    private void DashServerRpc()
+    private void DashServerRpc(Vector3 dashDirection)
     {
-        // Verifica novamente no servidor
-        if (!_isDashing && DashCooldownRemaining.Value <= 0f && IsRunner.Value)
+        // Apenas o Server executa. Checa se não está em dash, é um runner e o cooldown terminou.
+        if (!_isDashing && IsRunner.Value && DashCooldownRemaining.Value <= 0f)
         {
-            // 1. Inicia o Cooldown (no Server, que é o Owner da NetworkVariable)
+            // ATUALIZA O COOLDOWN NO SERVER PRIMEIRO
+            _dashOnCooldown = true;
+            _localDashCooldown = DASH_COOLDOWN;
             DashCooldownRemaining.Value = DASH_COOLDOWN;
 
-            // 2. Armazena a direção atual
-            // Usamos a direção do transform.forward pois reflete o último movimento do Owner.
-            Vector3 dashDirection = transform.forward;
-
-            // 3. Inicia o dash (Coroutine no Servidor)
-            StartCoroutine(DashCoroutine(dashDirection));
+            // Sincroniza o Dash visualmente com todos os Clients
+            DashClientRpc(dashDirection, DASH_COOLDOWN);
         }
+    }
+
+    [ClientRpc]
+    private void DashClientRpc(Vector3 dashDirection, float cooldownValue)
+    {
+        if (IsOwner)
+        {
+            _localDashCooldown = cooldownValue;
+            _dashOnCooldown = cooldownValue > 0f;
+        }
+
+        StartCoroutine(DashCoroutine(dashDirection));
     }
 
     /// <summary>
@@ -483,7 +626,6 @@ public class PlayerMovement : NetworkBehaviour
     /// </summary>
     public void UpdateMoveSpeed()
     {
-        // CORREÇÃO: Recalcular a velocidade baseada na velocidade base e no número de moedas
         float newSpeed = baseMoveSpeed - (coinsCarried.Value * speedReductionPerCoin);
         moveSpeed = Mathf.Max(1f, newSpeed); // Garante que a velocidade nunca fique abaixo de 1
 
@@ -523,6 +665,7 @@ public class PlayerMovement : NetworkBehaviour
     {
         base.OnNetworkDespawn();
         coinsCarried.OnValueChanged -= OnCoinsCarriedChanged;
+        DashCooldownRemaining.OnValueChanged -= OnDashCooldownChanged;
         UpdateBackpackScale();
     }
 

@@ -9,12 +9,14 @@ public class GameManager : NetworkBehaviour
     public static GameManager Instance { get; private set; }
 
     // ====================================================================
-    // Variáveis de Rede (Sincronizadas)
+    // Network Variables (Sincronized)
     // ====================================================================
     public NetworkVariable<int> score = new NetworkVariable<int>(0);
     public NetworkVariable<int> playerLives = new NetworkVariable<int>(3);
     public NetworkVariable<float> gameTimer = new NetworkVariable<float>(120.0f);
     public NetworkVariable<bool> gameStarted = new NetworkVariable<bool>(false);
+
+    // ...
 
     // ====================================================================
     // Variáveis do Inspector

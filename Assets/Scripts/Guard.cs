@@ -31,12 +31,23 @@ public class Guard : NetworkBehaviour
     private Quaternion _networkRotation;
     public float networkMovementSmoothness = 5f;
 
+    // Network variables
+    public NetworkVariable<float> AttackCooldownRemaining = new NetworkVariable<float>(0f);
+
+    // Variável local para o cooldown
+    private float _localAttackCooldown = 0f;
+    private bool _attackOnCooldown = false;
+
     // Private variables
     private CharacterController _characterController;
     private GameManager _gameManager;
 
     private float _lastPositionUpdateTime = 0f;
     private const float POSITION_UPDATE_INTERVAL = 0.1f; // 10 updates per second
+
+    [Header("Mobile Input State")]
+    private Vector2 _mobileMoveVector = Vector2.zero;
+    private bool _attackPressed = false;
 
     public override void OnNetworkSpawn()
     {
@@ -47,6 +58,20 @@ public class Guard : NetworkBehaviour
         if (_characterController == null)
         {
             Debug.LogError("CharacterController not found on Guard GameObject. Please add one!");
+        }
+
+        // Inicializa o cooldown
+        if (IsOwner)
+        {
+            _localAttackCooldown = AttackCooldownRemaining.Value;
+            _attackOnCooldown = AttackCooldownRemaining.Value > 0f;
+
+            // Notifica o UIManager
+            UIManager uiManager = FindFirstObjectByType<UIManager>();
+            if (uiManager != null)
+            {
+                uiManager.SetLocalCatcher(this);
+            }
         }
 
         if (attackHitboxPrefab != null)
@@ -77,12 +102,55 @@ public class Guard : NetworkBehaviour
 
         _networkPosition = transform.position;
         _networkRotation = transform.rotation;
+        AttackCooldownRemaining.OnValueChanged += OnAttackCooldownChanged;
     }
+
+    public override void OnNetworkDespawn()
+    {
+        base.OnNetworkDespawn();
+        AttackCooldownRemaining.OnValueChanged -= OnAttackCooldownChanged;
+    }
+
+    private void OnAttackCooldownChanged(float oldValue, float newValue)
+    {
+        // Atualiza o cooldown local quando a NetworkVariable mudar
+        if (IsOwner && Mathf.Abs(_localAttackCooldown - newValue) > 0.1f)
+        {
+            _localAttackCooldown = newValue;
+            _attackOnCooldown = newValue > 0f;
+        }
+    }
+
+    // MÉTODOS PÚBLICOS PARA CONEXÃO DA UI MÓVEL
+    public void SetMoveVector(Vector2 direction) => _mobileMoveVector = direction;
+    public void OnAttackButtonClicked() => _attackPressed = true;
 
     void Update()
     {
         if (IsOwner)
         {
+            // Atualiza o cooldown local
+            if (_localAttackCooldown > 0f)
+            {
+                _localAttackCooldown -= Time.deltaTime;
+                if (_localAttackCooldown <= 0f)
+                {
+                    _localAttackCooldown = 0f;
+                    _attackOnCooldown = false;
+                }
+
+                // Se for Host/Server, atualiza a NetworkVariable
+                if (IsServer)
+                {
+                    AttackCooldownRemaining.Value = _localAttackCooldown;
+                }
+                else
+                {
+                    // Client apenas: Sincroniza com server periodicamente
+                    SyncAttackCooldownServerRpc(_localAttackCooldown);
+                }
+            }
+
             // Se estiver balançando, não lida com movimento
             if (!_isSwinging)
             {
@@ -108,6 +176,16 @@ public class Guard : NetworkBehaviour
         ApplyGravity();
     }
 
+    [ServerRpc]
+    private void SyncAttackCooldownServerRpc(float clientCooldown)
+    {
+        // Server recebe o cooldown do client e atualiza a NetworkVariable
+        if (clientCooldown < AttackCooldownRemaining.Value)
+        {
+            AttackCooldownRemaining.Value = clientCooldown;
+        }
+    }
+
     private void ApplyGravity()
     {
         if (_characterController.isGrounded)
@@ -123,43 +201,112 @@ public class Guard : NetworkBehaviour
         _characterController.Move(new Vector3(0, _verticalVelocity * Time.deltaTime, 0));
     }
 
-    private void HandleMovement()
+    public void HandleMovement()
     {
-        // Pega os inputs do jogador (assumindo inputs do Unity)
-        float horizontalInput = Input.GetAxis("Horizontal");
-        float verticalInput = Input.GetAxis("Vertical");
-
-        // Calcule o movimento horizontal (X e Z)
-        Vector3 movement = new Vector3(horizontalInput, 0f, verticalInput);
-        if (movement.magnitude > 1f)
         {
-            movement.Normalize();
+            // Pega os inputs do jogador (PC e Mobile)
+            float horizontalInput = 0f;
+            float verticalInput = 0f;
+
+            // Tenta obter o input do Mobile Input State primeiro
+            bool isMobileInput = _mobileMoveVector.magnitude > 0.1f;
+
+            if (isMobileInput)
+            {
+                horizontalInput = _mobileMoveVector.x;
+                verticalInput = _mobileMoveVector.y;
+            }
+            else
+            {
+                horizontalInput = Input.GetAxis("Horizontal");
+                verticalInput = Input.GetAxis("Vertical");
+            }
+
+            // Calcule o movimento horizontal (X e Z)
+            Vector3 movement = new Vector3(horizontalInput, 0f, verticalInput);
+            if (movement.magnitude > 1f)
+            {
+                movement.Normalize();
+            }
+
+            // Move APENAS no plano XZ (horizontal)
+            _characterController.Move(movement * moveSpeed * Time.deltaTime);
+
+            // Lógica de rotação baseada no movimento
+            if (movement != Vector3.zero)
+            {
+                Quaternion targetRotation = Quaternion.LookRotation(movement);
+                transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+            }
+        }
+    }
+
+    // =======================================================
+    // SERVICOS RPC
+    // =======================================================
+
+    [ServerRpc]
+    private void AttackServerRpc()
+    {
+        // Apenas o servidor deve executar a lógica do ataque
+        if (!IsServer) return;
+
+        // Verifica se o ataque está disponível
+        if (AttackCooldownRemaining.Value > 0f)
+        {
+            return; // Ainda em cooldown
         }
 
-        // Move APENAS no plano XZ (horizontal)
-        _characterController.Move(movement * moveSpeed * Time.deltaTime);
+        // Inicia o cooldown
+        _localAttackCooldown = attackCooldown;
+        AttackCooldownRemaining.Value = attackCooldown;
 
-        // Lógica de rotação baseada no movimento
-        if (movement != Vector3.zero)
+        // Sincroniza o cooldown com todos os clients
+        SetAttackCooldownClientRpc(attackCooldown);
+
+        // Atualiza o tempo do último ataque no servidor
+        _lastAttackTime = Time.time;
+
+        // Inicia a corrotina de animação do balanço no servidor
+        StartCoroutine(SwingAnimationCoroutine(swingDuration));
+
+        // Executa o ataque
+        PerformAttack();
+
+        // Sincroniza a animação com todos os clients
+        AnimateAttackClientRpc();
+    }
+
+    [ClientRpc]
+    private void SetAttackCooldownClientRpc(float cooldownValue)
+    {
+        // Todos os clients recebem este valor
+        if (IsOwner)
         {
-            Quaternion targetRotation = Quaternion.LookRotation(movement);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+            _localAttackCooldown = cooldownValue;
+            _attackOnCooldown = cooldownValue > 0f;
         }
     }
 
     private void HandleAttackInput()
     {
-        // Exemplo: Botão Esquerdo do Mouse ou uma tecla (ex: 'Space')
-        if (Input.GetButtonDown("Fire1")  || Input.GetKeyDown(KeyCode.X) && Time.time >= _lastAttackTime + attackCooldown)
+        // Ataque: Apenas se for o proprietário, não estiver balançando e o cooldown tiver passado
+        if (IsOwner && !_isSwinging && AttackCooldownRemaining.Value <= 0f)
         {
-            // Chama o RPC para sincronizar o ataque para todos os clientes, mas
-            // APENAS o Servidor deve gerenciar a ativação do hitbox e o dano.
-            // Para simplicidade, vamos diretamente para o RPC.
-            RequestAttackServerRpc();
+            // 1. Verifica o input de ataque do PC (botão Z do teclado)
+            bool pcAttackInput = Input.GetKeyDown(KeyCode.Z);
 
-            // Atualiza o tempo do último ataque no lado do cliente (para o cooldown visual/lógico local)
-            _lastAttackTime = Time.time;
+            // 2. Verifica o input de ataque do Mobile
+            bool mobileAttackInput = _attackPressed;
+
+            if (pcAttackInput || mobileAttackInput)
+            {
+                // Chama o RPC para que o servidor autorize e execute o ataque
+                AttackServerRpc();
+            }
         }
+        // RESETAR O ESTADO DO BOTÃO MÓVEL APÓS A LEITURA
+        _attackPressed = false;
     }
 
     // RPC para sincronizar a posição e rotação do guarda
@@ -189,17 +336,6 @@ public class Guard : NetworkBehaviour
         }
     }
 
-    // RPC chamado pelo cliente para pedir ao servidor para executar o ataque
-    [ServerRpc]
-    private void RequestAttackServerRpc()
-    {
-        // 1. O Servidor executa o ataque (ativa o hitbox para o dano)
-        PerformAttack(); // O hitbox fica ativo pelo tempo de dano (0.2s, definido em CatcherAttack.cs)
-
-        // 2. O Servidor diz a TODOS os clientes para executarem a animação visual.
-        AnimateAttackClientRpc();
-    }
-
     [ClientRpc]
     private void AnimateAttackClientRpc()
     {
@@ -222,22 +358,16 @@ public class Guard : NetworkBehaviour
         // Rotações com base no novo Idle (0, 90, 0)
         Quaternion startRotation = Quaternion.Euler(idleLocalRotationEuler); // (0, 90, 0)
 
-        // Rotação horizontal inicial: (0, 90, 0) + giro de 90 graus no Eixo X local
-        // O Quaternion.Euler(90, 90, 0) alcança isso.
         Quaternion midRotation = Quaternion.Euler(90, 90, 0);
 
-        // Rotação horizontal final: (90, 90, 0) + arco de 150 graus no Eixo Y local
-        // Isso move o arco de 90 graus para 240 graus no Y, ou seja, 90 + 150.
-        // Para um movimento mais natural, vamos girar em Y de 90 para 240.
         Quaternion endRotation = Quaternion.Euler(90, -90, 0);
 
-        // --- FASE 1: Transição Rápida para a Posição de Ataque (Horizontal) ---
-        // ... (código existente da Fase 1 - Interpola Posição de idlePos para attackPos)
+        // --- 1. Transição Rápida para a Posição de Ataque (Horizontal) ---
         float preSwingTime = duration * 0.1f;
         float elapsedTime = 0f;
 
         hitboxTransform.localPosition = idlePos;
-        hitboxTransform.localRotation = startRotation; // Garante o ponto de partida
+        hitboxTransform.localRotation = startRotation;
 
         while (elapsedTime < preSwingTime)
         {
@@ -250,8 +380,7 @@ public class Guard : NetworkBehaviour
         hitboxTransform.localPosition = attackPos;
         hitboxTransform.localRotation = midRotation;
 
-        // --- FASE 2: O giro de "meia-lua" horizontal (Dano Ativo Aqui) ---
-        // ... (código existente da Fase 2 - Interpola Rotação de midRotation para endRotation)
+        // --- 2. O giro de "meia-lua" horizontal ---
         float swingRotateTime = duration * 0.8f;
         float swingElapsedTime = 0f;
 
@@ -264,8 +393,7 @@ public class Guard : NetworkBehaviour
         }
         hitboxTransform.localRotation = endRotation;
 
-        // --- FASE 3: Retorno à Posição de Descanso ---
-        // ... (código existente da Fase 3 - Interpola Posição de attackPos para idlePos e Rotação de endRotation para startRotation)
+        // --- 3. Retorno à Posição de Descanso ---
         float postSwingTime = duration * 0.1f;
         float elapsedReturnTime = 0f;
 
@@ -290,7 +418,6 @@ public class Guard : NetworkBehaviour
     {
         if (_catcherAttackScript != null)
         {
-            // ATIVA O SCRIPT. O OnEnable do CatcherAttack.cs vai ATIVAR o Collider
             _catcherAttackScript.enabled = true;
         }
     }
