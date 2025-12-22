@@ -31,14 +31,3 @@ Para rodar e modificar este projeto, você precisará:
 
 * **Unity Hub:** Recomenda-se a versão LTS mais recente do Unity Editor.
 * **Git:** Para controle de versão.
-
-## Contribuição
-
-Contribuições são bem-vindas! Se você tiver ideias ou quiser ajudar, sinta-se à vontade para:
-
-1.  Fazer um "fork" do repositório.
-2.  Criar uma nova "branch" (`git checkout -b feature/sua-feature`).
-3.  Fazer suas alterações.
-4.  Comitar suas mudanças (`git commit -m 'Adiciona nova feature'`).
-5.  Enviar para a "branch" (`git push origin feature/sua-feature`).
-6.  Abrir um "Pull Request".
