@@ -7,7 +7,6 @@ using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
-
 public class MenuManager : MonoBehaviour
 {
     public static MenuManager Instance { get; private set; }
@@ -23,34 +22,42 @@ public class MenuManager : MonoBehaviour
     public TMP_InputField joinCodeInput;
 
     private NetworkConnectionManager _connectionManager;
-    private string _selectedScene = "TestScene"; // Valor padrão
+    private string _selectedScene = "TestScene";
 
     void Awake()
     {
+        // GARANTIR QUE APENAS UMA INSTÂNCIA EXISTE
         if (Instance != null && Instance != this)
         {
+            Debug.Log($"Destruindo MenuManager duplicado: {gameObject.name}");
             Destroy(gameObject);
+            return;
         }
-        else
-        {
-            Instance = this;
-            DontDestroyOnLoad(gameObject);
-        }
+
+        Instance = this;
+        DontDestroyOnLoad(gameObject); // IMPEDIR QUE SEJA DESTRUÍDO AO TROCAR DE CENA
+
+        Debug.Log($"MenuManager inicializado e persistente: {gameObject.name}");
     }
 
     void Start()
     {
+        // Garantir que a instância está correta
+        if (Instance == null)
+        {
+            Instance = this;
+            DontDestroyOnLoad(gameObject);
+        }
+
         _connectionManager = NetworkConnectionManager.Instance;
 
         // Configurar dropdowns
         if (sceneDropdown != null)
         {
-            // Adicione as cenas que deseja permitir.
             sceneDropdown.options.Clear();
             sceneDropdown.options.Add(new TMP_Dropdown.OptionData("TestScene"));
             sceneDropdown.options.Add(new TMP_Dropdown.OptionData("BeachScene"));
 
-            // Define o valor inicial (se houver)
             if (sceneDropdown.options.Count > 0)
             {
                 _selectedScene = sceneDropdown.options[sceneDropdown.value].text;
@@ -67,20 +74,16 @@ public class MenuManager : MonoBehaviour
 
         if (joinCodeInput != null)
         {
-            // 1. Configuração para forçar MAIÚSCULAS
             joinCodeInput.onValidateInput += DelegateOnValidateInput;
-
-            // 2. Limita o número de caracteres para 6
             joinCodeInput.characterLimit = 6;
-
-            // O Relay Service usa apenas caracteres alfanuméricos, isso pode ser útil:
             joinCodeInput.contentType = TMP_InputField.ContentType.Alphanumeric;
         }
 
-        ShowMainMenu();
-
         // Registrar para eventos de mudança de cena
         SceneManager.sceneLoaded += OnSceneLoaded;
+
+        // Configurar UI inicial
+        ShowMainMenu();
     }
 
     void OnDestroy()
@@ -118,7 +121,7 @@ public class MenuManager : MonoBehaviour
     // UI Callbacks
     // ====================================================================
 
-    private void OnSceneSelected(int index)
+    public void OnSceneSelected(int index)
     {
         if (sceneDropdown != null && index >= 0 && index < sceneDropdown.options.Count)
         {
@@ -127,7 +130,7 @@ public class MenuManager : MonoBehaviour
         }
     }
 
-    private void OnPlayerTypeSelected(int index)
+    public void OnPlayerTypeSelected(int index)
     {
         bool isRunner = (index == 0);
         _connectionManager.SetPlayerType(isRunner);
@@ -146,28 +149,62 @@ public class MenuManager : MonoBehaviour
     // ====================================================================
     // MÉTODOS DE CONEXÃO
     // ====================================================================
-    public void StartHost()
+    public async void StartHost()
     {
         if (_connectionManager != null)
         {
-            // 1. Define o tipo de jogador UMA VEZ apenas, baseado no dropdown atual
-            bool isCatcher = playerTypeDropdown.value == 1;
-            _connectionManager.SetPlayerType(isCatcher);
+            // Feedback visual
+            SetHostButtonState(false);
 
-            // DEBUG: Verificar o tipo definido
-            Debug.Log($"=== HOST: Tipo de jogador definido como: {(isCatcher ? "Catcher" : "Runner")} ===");
-
-            // 2. Configura o payload de conexão ANTES de iniciar o host
-            byte[] connectionPayload = _connectionManager.GetConnectionPayload();
-            if (NetworkManager.Singleton != null && NetworkManager.Singleton.NetworkConfig != null)
+            try
             {
-                NetworkManager.Singleton.NetworkConfig.ConnectionData = connectionPayload;
-                Debug.Log($"Payload configurado: {(PlayerType)connectionPayload[0]}");
-            }
+                // 1. Define o tipo de jogador
+                bool isCatcher = playerTypeDropdown.value == 1;
+                _connectionManager.SetPlayerType(isCatcher);
 
-            string sceneName = _selectedScene;
-            _connectionManager.StartHostWithScene(sceneName);
+                Debug.Log($"=== NOVA PARTIDA: Host como {(isCatcher ? "Catcher" : "Runner")} ===");
+
+                // 2. Configurar payload ANTES de iniciar
+                byte[] connectionPayload = _connectionManager.GetConnectionPayload();
+                if (NetworkManager.Singleton != null && NetworkManager.Singleton.NetworkConfig != null)
+                {
+                    NetworkManager.Singleton.NetworkConfig.ConnectionData = connectionPayload;
+                    Debug.Log($"Payload configurado: {(PlayerType)connectionPayload[0]}");
+                }
+
+                string sceneName = _selectedScene;
+
+                // 3. Iniciar host
+                _connectionManager.StartHostWithScene(sceneName);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Erro ao iniciar host: {e}");
+                // Reativar botão em caso de erro
+                SetHostButtonState(true);
+            }
+            finally
+            {
+                // Reativar botão após um tempo (ou quando a partida realmente começar)
+                Invoke(nameof(ReenableHostButton), 3f);
+            }
         }
+    }
+
+    private void SetHostButtonState(bool interactable)
+    {
+        Button hostButton = GetComponentInChildren<Button>(); // Ajuste para seu botão específico
+        if (hostButton != null)
+        {
+            hostButton.interactable = interactable;
+            hostButton.GetComponentInChildren<TextMeshProUGUI>().text =
+                interactable ? "Host Game" : "Preparando...";
+        }
+    }
+
+    private void ReenableHostButton()
+    {
+        SetHostButtonState(true);
     }
 
     public void JoinGame()

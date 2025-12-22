@@ -37,6 +37,8 @@ public class NetworkConnectionManager : NetworkBehaviour
     private bool _isInitialized = false;
     private bool _isNetcodeConfigured = false;
     public string LobbyCode => _lobbyCode;
+    // Constante para caracteres que causam confusão
+    private const string FORBIDDEN_CHARS = "OIL0";
     public bool IsInitialized => _isInitialized;
 
     private UIManager _uiManager;
@@ -46,6 +48,7 @@ public class NetworkConnectionManager : NetworkBehaviour
     private Dictionary<ulong, PlayerType> _clientPlayerTypes = new Dictionary<ulong, PlayerType>();
     private int _playerCount = 0;
     private int _maxPlayers = 0;
+    private int _lastPlayerCount = 0;
 
     // Constante para Heartbeat do Lobby
     private const float HEARTBEAT_INTERVAL = 10f;
@@ -273,22 +276,6 @@ public class NetworkConnectionManager : NetworkBehaviour
         {
             Invoke(nameof(DelayedLobbyUpdate), 1f);
         }
-        /*
-        if (IsHost)
-        {
-            ulong hostClientId = NetworkManager.Singleton.LocalClientId;
-            // Verifica se o cliente host não tem um player object
-            if (NetworkManager.Singleton.ConnectedClients[hostClientId].PlayerObject == null)
-            {
-                if (_gameManager != null)
-                {
-                    PlayerType playerType = GetPlayerType(hostClientId);
-                    _gameManager.SpawnPlayerForClient(hostClientId, playerType);
-                    //Debug.Log($"Spawnando host player {hostClientId} como {playerType} em OnNetworkSpawn");
-                }
-            }
-        }
-        */
     }
 
     private void DelayedLobbyUpdate()
@@ -330,7 +317,7 @@ public class NetworkConnectionManager : NetworkBehaviour
     {
         try
         {
-            //Debug.Log($"=== INICIANDO HOST COMO: {_selectedPlayerType} ===");
+            Debug.Log($"=== INICIANDO HOST COMO: {_selectedPlayerType} ===");
 
             if (!_isInitialized)
             {
@@ -342,31 +329,74 @@ public class NetworkConnectionManager : NetworkBehaviour
                 await AuthenticationService.Instance.SignInAnonymouslyAsync();
             }
 
-            // 1. CONFIGURAR RELAY
-            Allocation allocation = await RelayService.Instance.CreateAllocationAsync(MAX_PLAYERS + MAX_GUARDS);
-            string joinCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
+            string joinCode = "";
+            Allocation allocation = null;
+            int maxRetries = 5; // Limite de tentativas para gerar um código limpo
 
-            //Debug.Log($"Relay criado: {joinCode}");
-
-            // Configurar transporte
-            UnityTransport transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-            transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, "dtls"));
-
-            // 2. CRIAR LOBBY COM INFORMAÇÃO DA CENA
-            CreateLobbyOptions options = new CreateLobbyOptions
+            // NOVO LOOP: Tenta gerar um Allocation e um Lobby Code limpos
+            for (int i = 0; i < maxRetries; i++)
             {
-                IsPrivate = false,
-                Data = new Dictionary<string, DataObject>
-            {
-                { "RelayJoinCode", new DataObject(DataObject.VisibilityOptions.Member, joinCode) },
-                { "SceneName", new DataObject(DataObject.VisibilityOptions.Member, sceneName) }
+                try
+                {
+                    // 1. CONFIGURAR RELAY (Cria uma nova Allocation a cada tentativa)
+                    allocation = await RelayService.Instance.CreateAllocationAsync(MAX_PLAYERS + MAX_GUARDS);
+                    string relayJoinCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
+
+                    // Configurar transporte (o NetworkManager precisa da alocação)
+                    UnityTransport transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
+                    transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, "dtls"));
+
+                    // 2. TENTAR CRIAR LOBBY
+                    CreateLobbyOptions options = new CreateLobbyOptions
+                    {
+                        IsPrivate = false,
+                        Data = new Dictionary<string, DataObject>
+                    {
+                        // Salvamos o código do Relay no Lobby
+                        { "RelayJoinCode", new DataObject(DataObject.VisibilityOptions.Member, relayJoinCode) },
+                        { "SceneName", new DataObject(DataObject.VisibilityOptions.Member, sceneName) }
+                    }
+                    };
+
+                    _currentLobby = await LobbyService.Instance.CreateLobbyAsync($"Lobby_{relayJoinCode}", MAX_PLAYERS + MAX_GUARDS, options);
+                    string lobbyCodeCheck = _currentLobby.LobbyCode;
+
+                    // 3. VERIFICAR CÓDIGO DO LOBBY
+                    if (IsCodeClean(lobbyCodeCheck))
+                    {
+                        // Código aceitável, sair do loop
+                        _lobbyCode = lobbyCodeCheck;
+                        joinCode = relayJoinCode; // joinCode = Relay code. _lobbyCode = Lobby code
+                        Debug.Log($"Lobby Code limpo gerado: {_lobbyCode}");
+                        break;
+                    }
+                    else
+                    {
+                        // Código não aceitável, deletar o lobby e tentar novamente na próxima iteração
+                        Debug.LogWarning($"Lobby Code '{lobbyCodeCheck}' contém caracteres proibidos. Deletando Lobby e tentando novamente.");
+                        await LobbyService.Instance.DeleteLobbyAsync(_currentLobby.Id);
+                        _currentLobby = null; // Limpa para a próxima iteração
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"ERRO na tentativa {i + 1} de Host: {e.Message}");
+                    if (i == maxRetries - 1) throw; // Re-lança na última tentativa
+                }
+
+                // Pequeno delay antes de tentar novamente, se não for a última tentativa
+                if (i < maxRetries - 1)
+                {
+                    await Task.Delay(500);
+                }
             }
-            };
 
-            _currentLobby = await LobbyService.Instance.CreateLobbyAsync($"Lobby_{joinCode}", MAX_PLAYERS + MAX_GUARDS, options);
-            _lobbyCode = _currentLobby.LobbyCode;
-
-            //Debug.Log($"Lobby criado: {_lobbyCode}");
+            // Se o código for nulo (após o loop), retorna erro
+            if (_currentLobby == null || !IsCodeClean(_lobbyCode))
+            {
+                Debug.LogError("Falha crítica: Não foi possível gerar um Lobby Code limpo após todas as tentativas.");
+                return;
+            }
 
             ConfigureNetworkManager();
 
@@ -374,12 +404,12 @@ public class NetworkConnectionManager : NetworkBehaviour
             Debug.Log($"=== VERIFICAÇÃO FINAL - Payload do Host: {(PlayerType)connectionPayload[0]} ===");
             NetworkManager.Singleton.NetworkConfig.ConnectionData = connectionPayload;
 
-            //Debug.Log($"Payload de conexão configurado: {(PlayerType)connectionPayload[0]}");
+            Debug.Log($"Payload de conexão configurado: {(PlayerType)connectionPayload[0]}");
 
-            // 3. INICIAR HOST
+            // 4. INICIAR HOST
             if (NetworkManager.Singleton.StartHost())
             {
-                //Debug.Log("Host iniciado com sucesso!");
+                Debug.Log("Host iniciado com sucesso!");
 
                 ulong hostClientId = NetworkManager.Singleton.LocalClientId;
 
@@ -387,19 +417,19 @@ public class NetworkConnectionManager : NetworkBehaviour
                 if (!_clientPlayerTypes.ContainsKey(hostClientId))
                 {
                     _clientPlayerTypes.Add(hostClientId, _selectedPlayerType);
-                    //Debug.Log($"Tipo de jogador do Host {hostClientId} registrado como: {_selectedPlayerType}");
+                    Debug.Log($"Tipo de jogador do Host {hostClientId} registrado como: {_selectedPlayerType}");
                 }
 
-                // 4. TROCA DE CENA
+                // 5. TROCA DE CENA
                 NetworkManager.Singleton.SceneManager.LoadScene(sceneName, LoadSceneMode.Single);
 
-                // 5. ATUALIZAR UI
+                // 6. ATUALIZAR UI
                 if (_uiManager != null)
                 {
                     _uiManager.ShowLobbyUI(true, _lobbyCode);
                 }
 
-                // 6. INICIAR HEARTBEAT
+                // 7. INICIAR HEARTBEAT
 #pragma warning disable 4014
                 HeartbeatLobbyCoroutine();
 #pragma warning restore 4014
@@ -742,29 +772,213 @@ public class NetworkConnectionManager : NetworkBehaviour
 
     public async void Disconnect(bool goToMainMenu = true)
     {
-        if (_currentLobby != null)
-        {
-            if (IsHost || IsServer)
-            {
-                await LobbyService.Instance.DeleteLobbyAsync(_currentLobby.Id);
-            }
-            else
-            {
-                await LobbyService.Instance.RemovePlayerAsync(_currentLobby.Id, _playerLobbyId);
-            }
-            _currentLobby = null;
-        }
+        Debug.Log("=== DISCONNECT INICIADO ===");
 
+        // 1. Primeiro shutdown do NetworkManager
         if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening)
         {
-            LeaveLobby(); // Garante que o lobby é limpo no Unity Services
+            Debug.Log("Desligando NetworkManager...");
             NetworkManager.Singleton.Shutdown();
+
+            // Pequeno delay para garantir shutdown
+            await Task.Delay(100);
         }
 
+        // 2. Limpar lobby APENAS se existir e for válido
+        if (_currentLobby != null && !string.IsNullOrEmpty(_currentLobby.Id))
+        {
+            try
+            {
+                Debug.Log($"Tentando limpar lobby: {_currentLobby.Id}");
+
+                // Verificar se é Host antes de tentar deletar
+                bool isHost = NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost;
+
+                if (isHost)
+                {
+                    Debug.Log("Host deletando lobby...");
+                    await LobbyService.Instance.DeleteLobbyAsync(_currentLobby.Id);
+                }
+                else
+                {
+                    Debug.Log("Client saindo do lobby...");
+                    await LobbyService.Instance.RemovePlayerAsync(_currentLobby.Id, _playerLobbyId);
+                }
+            }
+            catch (LobbyServiceException e) when (e.Reason == LobbyExceptionReason.LobbyNotFound)
+            {
+                // Lobby já não existe - isso é OK
+                Debug.Log("Lobby já foi deletado (não encontrado)");
+            }
+            catch (Exception e)
+            {
+                // Log mas não impede o fluxo
+                Debug.LogWarning($"Erro ao limpar lobby (não crítico): {e.Message}");
+            }
+            finally
+            {
+                // SEMPRE limpa a referência
+                _currentLobby = null;
+                _lobbyCode = "";
+            }
+        }
+        else
+        {
+            Debug.Log("Nenhum lobby ativo para limpar");
+        }
+
+        // 3. RESETAR TODAS AS VARIÁVEIS DE ESTADO
+        ResetConnectionState();
+
+        // 4. Parar heartbeat se estiver rodando
+        if (_heartbeatCoroutine != null)
+        {
+            StopCoroutine(_heartbeatCoroutine);
+            _heartbeatCoroutine = null;
+        }
+
+        // 5. Ir para o menu se solicitado
         if (goToMainMenu)
         {
+            Debug.Log("Carregando MenuScene...");
+
+            // Usar SceneManager diretamente
             SceneManager.LoadScene("MenuScene");
+
+            // Resetar UI após carregar cena
+            Invoke(nameof(ResetUIAfterSceneLoad), 0.5f);
         }
+
+        Debug.Log("=== DISCONNECT COMPLETO ===");
+    }
+
+    // Método auxiliar para limpeza completa
+    public void ForceCleanDisconnect()
+    {
+        // Chama o Disconnect de forma síncrona inicialmente
+        Disconnect(true);
+    }
+
+    // Resetar estado da conexão
+    // Resetar estado da conexão
+    private void ResetConnectionState()
+    {
+        Debug.Log("Resetando estado da conexão...");
+
+        // Limpar todas as listas e dicionários
+        _clientPlayerTypes.Clear();
+        _activeClientCount.Clear();
+
+        // Resetar NetworkVariables
+        if (IsSpawned)
+        {
+            totalPlayers.Value = 0;
+            totalGuards.Value = 0;
+        }
+        else
+        {
+            // Se não estiver spawned, cria novas instâncias
+            totalPlayers = new NetworkVariable<int>(0);
+            totalGuards = new NetworkVariable<int>(0);
+        }
+
+        // Resetar flags
+        _selectedPlayerType = PlayerType.Runner;
+        _playerCount = 0;
+        _maxPlayers = 0;
+        _lastPlayerCount = 0; // <-- RESETAR AQUI TAMBÉM
+
+        // Parar qualquer heartbeat
+        if (_heartbeatCoroutine != null)
+        {
+            StopCoroutine(_heartbeatCoroutine);
+            _heartbeatCoroutine = null;
+        }
+
+        Debug.Log("Estado da conexão resetado");
+    }
+
+    // Método para garantir início limpo de nova partida
+    public async Task<bool> CleanStartNewGame(string sceneName)
+    {
+        Debug.Log("=== INICIANDO NOVA PARTIDA LIMPA ===");
+
+        // 1. Garantir que serviços estão inicializados
+        if (!_isInitialized)
+        {
+            await InitializeUnityServices();
+        }
+
+        // 2. Resetar estado completamente
+        ResetConnectionState();
+
+        // 3. Resetar autenticação se necessário
+        if (!AuthenticationService.Instance.IsSignedIn)
+        {
+            try
+            {
+                await AuthenticationService.Instance.SignInAnonymouslyAsync();
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Erro ao reautenticar: {e.Message}");
+                return false;
+            }
+        }
+
+        // 4. Garantir que NetworkManager está limpo
+        if (NetworkManager.Singleton != null)
+        {
+            if (NetworkManager.Singleton.IsListening)
+            {
+                NetworkManager.Singleton.Shutdown();
+                await Task.Delay(200); // Dar tempo para shutdown completo
+            }
+
+            // Resetar callbacks
+            NetworkManager.Singleton.ConnectionApprovalCallback -= ApprovalCheck;
+            NetworkManager.Singleton.OnClientConnectedCallback -= OnClientConnected;
+            NetworkManager.Singleton.OnClientDisconnectCallback -= OnClientDisconnected;
+
+            _isNetcodeConfigured = false;
+        }
+
+        Debug.Log("Sistema limpo e pronto para nova partida");
+        return true;
+    }
+
+    // Resetar UI após carregar cena
+    private void ResetUIAfterSceneLoad()
+    {
+        Debug.Log("Resetando UI após carregar cena...");
+
+        // Pequeno delay para garantir que a cena está completamente carregada
+        Invoke(nameof(DelayedUIReset), 0.5f);
+    }
+
+    private void DelayedUIReset()
+    {
+        // Encontrar UIManager na nova cena
+        var uiManager = FindFirstObjectByType<UIManager>();
+        if (uiManager != null)
+        {
+            uiManager.ShowMainMenuUI();
+        }
+
+        // Garantir que MenuManager existe
+        if (MenuManager.Instance == null)
+        {
+            MenuManager manager = FindFirstObjectByType<MenuManager>();
+            if (manager != null)
+            {
+                Debug.Log("MenuManager encontrado na cena");
+            }
+        }
+
+        // Reconectar botões usando o MenuButtonHolder
+        MenuButtonHolder.ReconnectAllButtonsInScene();
+
+        Debug.Log("UI resetada com sucesso");
     }
 
     // ====================================================================
@@ -782,14 +996,30 @@ public class NetworkConnectionManager : NetworkBehaviour
         if (_uiManager != null)
         {
             _uiManager.UpdatePlayerCounter(currentTotal, maxTotal);
-            //Debug.Log($"UI Updated: {currentTotal}/{maxTotal} players (Players: {totalPlayers.Value}, Guards: {totalGuards.Value})");
+
+            // Atualizar _lastPlayerCount
+            if (currentTotal != _lastPlayerCount)
+            {
+                _lastPlayerCount = currentTotal;
+                Debug.Log($"Contador atualizado: {currentTotal}/{maxTotal} jogadores (Players: {totalPlayers.Value}, Guards: {totalGuards.Value})");
+            }
         }
+    }
+
+    // Verifica se o Lobby code tem os caracteres O, I, L, 0.
+    private bool IsCodeClean(string code)
+    {
+        // Se o código for nulo ou vazio, consideramos impuro (embora não deva ser)
+        if (string.IsNullOrEmpty(code)) return false;
+
+        // Verifica se qualquer um dos caracteres proibidos está presente
+        return code.IndexOfAny(FORBIDDEN_CHARS.ToCharArray()) == -1;
     }
 
     [ClientRpc]
     private void UpdateLobbyTextsClientRpc(string lobbyCode)
     {
-        //Debug.Log($"UpdateLobbyTextsClientRpc called with code: {lobbyCode}");
+        Debug.Log($"UpdateLobbyTextsClientRpc chamado com código: {lobbyCode}");
 
         if (UIManager.Instance != null)
         {
@@ -804,6 +1034,13 @@ public class NetworkConnectionManager : NetworkBehaviour
             if (!gameIsRunning)
             {
                 bool isHost = NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost;
+
+                // Atualizar _lastPlayerCount
+                if (currentTotal != _lastPlayerCount)
+                {
+                    _lastPlayerCount = currentTotal;
+                }
+
                 // Chama o método atualizado no UIManager
                 UIManager.Instance.ShowLobbyUI(isHost, lobbyCode);
             }

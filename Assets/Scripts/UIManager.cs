@@ -21,6 +21,14 @@ public class UIManager : MonoBehaviour
     public GameObject dashCooldownDisplay; // Painel que mostra o cooldown
     public TextMeshProUGUI dashCooldownText; // TextMeshProUGUI dentro do painel
 
+    [Header("Attack UI")]
+    public GameObject attackUIContainer;
+    public GameObject attackIconAvailable;
+    public GameObject attackCooldownDisplay;
+    public TextMeshProUGUI attackCooldownText;
+
+    public GameObject virtualJoystickContainer;
+
     private List<GameObject> lifeIcons = new List<GameObject>();
     public static UIManager Instance { get; private set; }
 
@@ -42,7 +50,8 @@ public class UIManager : MonoBehaviour
     private UIState _currentState = UIState.MainMenu;
     private bool _isHost = false;
     private int _lastPlayerCount = 0;
-    private PlayerMovement _localPlayerMovement;
+    private PlayerMovement _localRunner;
+    private Guard _localCatcher;
 
     void Awake()
     {
@@ -59,6 +68,10 @@ public class UIManager : MonoBehaviour
     void Start()
     {
         //Debug.Log("UIManager Start called");
+#if UNITY_ANDROID || UNITY_IOS
+        // Define a orientação como Paisagem (Landscape) para garantir que o celular fique virado.
+        Screen.orientation = ScreenOrientation.LandscapeLeft;
+#endif
         InitializeUI();
 
         Invoke(nameof(DelayedUIUpdate), 1.5f);
@@ -93,6 +106,7 @@ public class UIManager : MonoBehaviour
             }
         }
         UpdateDashUI();
+        UpdateAttackUI();
     }
 
     void OnDestroy()
@@ -100,9 +114,14 @@ public class UIManager : MonoBehaviour
         SceneManager.sceneLoaded -= OnSceneLoaded;
     }
 
-    public void SetLocalPlayerMovement(PlayerMovement player)
+    public void SetLocalPlayerMovement(PlayerMovement playerMovement)
     {
-        _localPlayerMovement = player;
+        _localRunner = playerMovement;
+    }
+
+    public void SetLocalCatcher(Guard guard)
+    {
+        _localCatcher = guard;
     }
 
     private void InitializeUI()
@@ -177,10 +196,6 @@ public class UIManager : MonoBehaviour
         //Debug.Log($"Start Match Button - Active: {isHost}, Interactable: {startMatchButton.interactable}");
     }
 
-    // ====================================================================
-    // NOVOS MÉTODOS DE CONTROLE DE UI ENTRE CENAS
-    // ====================================================================
-
     public void ShowMainMenuUI()
     {
         _currentState = UIState.MainMenu;
@@ -208,7 +223,6 @@ public class UIManager : MonoBehaviour
         if (gameHudPanel != null) gameHudPanel.SetActive(true);
     }
 
-    // ADICIONAR método para detectar mudança de cena
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
         //Debug.Log($"Cena carregada: {scene.name}");
@@ -223,7 +237,6 @@ public class UIManager : MonoBehaviour
         }
     }
 
-    // ADICIONAR método para mostrar mensagem de loading
     public void ShowLoadingMessage(string message)
     {
         //Debug.Log($"UI Loading: {message}");
@@ -243,10 +256,6 @@ public class UIManager : MonoBehaviour
         }
     }
 
-    // ====================================================================
-    // MÉTODOS EXISTENTES (COM MODIFICAÇÕES)
-    // ====================================================================
-
     /// <summary>
     /// Chamado pelo GameManager para ativar/desativar o lobby e o HUD do jogo.
     /// </summary>
@@ -261,6 +270,10 @@ public class UIManager : MonoBehaviour
         if (startMatchButton != null)
         {
             startMatchButton.interactable = false;
+        }
+        if (virtualJoystickContainer != null)
+        {
+            virtualJoystickContainer.SetActive(started);
         }
     }
 
@@ -279,11 +292,8 @@ public class UIManager : MonoBehaviour
 
             if (_gameManager != null)
             {
-                // NOVO: Chama o método que faz o spawn dos jogadores E inicia o jogo
                 _gameManager.SpawnAllPlayersAndStartGame();
 
-                // O painel de lobby será escondido pela lógica de rede, mas chamamos ShowGameUI
-                // para transicionar o UI localmente (caso a lógica de rede demore ou seja assíncrona).
                 ShowGameUI();
             }
             else
@@ -298,10 +308,12 @@ public class UIManager : MonoBehaviour
         var connectionManager = FindFirstObjectByType<NetworkConnectionManager>();
         if (connectionManager != null)
         {
-            connectionManager.Disconnect(true);
+            // Força limpeza completa e vai para o menu
+            connectionManager.ForceCleanDisconnect();
         }
         else
         {
+            // Fallback: Vai direto para o menu
             UnityEngine.SceneManagement.SceneManager.LoadScene("MenuScene");
         }
     }
@@ -321,7 +333,7 @@ public class UIManager : MonoBehaviour
         {
             var gameManager = FindFirstObjectByType<GameManager>();
             int targetScore = gameManager != null ? gameManager.scoreToWin : 10;
-            scoreText.text = $"Score: {newScore} / {targetScore}";
+            scoreText.text = $"Coins: {newScore} / {targetScore}";
         }
     }
 
@@ -339,7 +351,7 @@ public class UIManager : MonoBehaviour
     {
         if (lobbyCodeText != null)
         {
-            lobbyCodeText.text = $"LOBBY CODE: {code}";
+            lobbyCodeText.text = $"Lobby: {code}";
         }
     }
 
@@ -347,7 +359,7 @@ public class UIManager : MonoBehaviour
     {
         if (playerCountText != null)
         {
-            playerCountText.text = $"Players: {current} / {max}";
+            playerCountText.text = $"Online: {current} / {max}";
         }
 
         if (startMatchButton != null && NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost)
@@ -399,39 +411,110 @@ public class UIManager : MonoBehaviour
     /// </summary>
     private void UpdateDashUI()
     {
-        if (_localPlayerMovement == null)
+        // Se não temos uma referência ao jogador local
+        if (_localRunner == null)
         {
-            _localPlayerMovement = FindFirstObjectByType<PlayerMovement>(); // Tenta encontrar o player
-            if (_localPlayerMovement == null || !_localPlayerMovement.IsRunner.Value)
+            // Tenta encontrar o player local (Owner)
+            PlayerMovement[] allPlayers = FindObjectsByType<PlayerMovement>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (PlayerMovement player in allPlayers)
             {
-                dashUIContainer.SetActive(false);
-                return; // Apenas runners
+                if (player.IsOwner && player.IsRunner.Value)
+                {
+                    _localRunner = player;
+                    break;
+                }
             }
-            else
+
+            if (_localRunner == null)
             {
-                dashUIContainer.SetActive(true);
+                // Se ainda não encontrou, desativa a UI
+                if (dashUIContainer != null) dashUIContainer.SetActive(false);
+                return;
             }
-                
         }
 
-        float cooldown = _localPlayerMovement.DashCooldownRemaining.Value;
+        // Verifica se é um Runner
+        if (!_localRunner.IsRunner.Value)
+        {
+            if (dashUIContainer != null) dashUIContainer.SetActive(false);
+            return;
+        }
+
+        // Ativa o container do dash UI
+        if (dashUIContainer != null) dashUIContainer.SetActive(true);
+
+        // Obtém o cooldown da variável de rede
+        float cooldown = _localRunner.DashCooldownRemaining.Value;
+
+        // DEBUG: Log para verificar valores
+        // Debug.Log($"Dash UI - Cooldown: {cooldown}, IsRunner: {_localPlayerMovement.IsRunner.Value}, IsOwner: {_localPlayerMovement.IsOwner}");
 
         if (cooldown <= 0f)
         {
-            // Dash Disponível
+            // Dash Disponível - Esconde o painel de cooldown
             if (dashIconAvailable != null) dashIconAvailable.SetActive(true);
             if (dashCooldownDisplay != null) dashCooldownDisplay.SetActive(false);
         }
         else
         {
-            // Dash em Cooldown
+            // Dash em Cooldown - Mostra o painel com o texto
             if (dashIconAvailable != null) dashIconAvailable.SetActive(false);
             if (dashCooldownDisplay != null) dashCooldownDisplay.SetActive(true);
 
             if (dashCooldownText != null)
             {
-                // Mostra o tempo restante com uma casa decimal
                 dashCooldownText.text = cooldown.ToString("F1");
+            }
+        }
+    }
+
+    private void UpdateAttackUI()
+    {
+        // Se não temos uma referência ao guard local
+        if (_localCatcher == null)
+        {
+            // Tenta encontrar o guard local (Owner)
+            Guard[] allGuards = FindObjectsByType<Guard>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (Guard guard in allGuards)
+            {
+                if (guard.IsOwner)
+                {
+                    _localCatcher = guard;
+                    break;
+                }
+            }
+
+            if (_localCatcher == null)
+            {
+                // Se ainda não encontrou, desativa a UI
+                if (attackUIContainer != null) attackUIContainer.SetActive(false);
+                return;
+            }
+        }
+
+        // Ativa o container do attack UI
+        if (attackUIContainer != null) attackUIContainer.SetActive(true);
+
+        // Obtém o cooldown da variável de rede
+        float cooldown = _localCatcher.AttackCooldownRemaining.Value;
+
+        // Debug.Log($"Attack UI - Cooldown: {cooldown}");
+
+        if (cooldown <= 0f)
+        {
+            // Attack Disponível - Esconde o painel de cooldown
+            if (attackIconAvailable != null) attackIconAvailable.SetActive(true);
+            if (attackCooldownDisplay != null) attackCooldownDisplay.SetActive(false);
+        }
+        else
+        {
+            // Attack em Cooldown - Mostra o painel com o texto
+            if (attackIconAvailable != null) attackIconAvailable.SetActive(false);
+            if (attackCooldownDisplay != null) attackCooldownDisplay.SetActive(true);
+
+            if (attackCooldownText != null)
+            {
+                attackCooldownText.text = cooldown.ToString("F1");
             }
         }
     }

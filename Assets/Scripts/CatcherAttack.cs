@@ -8,7 +8,7 @@ public class CatcherAttack : MonoBehaviour
     // A referÍncia ao NetworkObject do guarda/catcher que possui este ataque.
     // Usamos NetworkObject para garantir que apenas o Guarda "propriet·rio" cause dano.
     [HideInInspector] public NetworkObject ownerNetworkObject;
-    private bool _hasHit = false; // Flag para garantir que o ataque sÛ cause dano uma vez
+    private bool _hasHit = false; // Flag para garantir que o ataque sÅEcause dano uma vez
 
     // Tempo que o hitbox deve ficar ativo (geralmente muito r·pido)
     public float activeTime = 0.2f;
@@ -25,7 +25,7 @@ public class CatcherAttack : MonoBehaviour
 
     void OnEnable()
     {
-        //Ativa o Collider quando o script È ativado
+        //Ativa o Collider quando o script ÅEativado
         if (_collider != null) _collider.enabled = true;
 
         // Reinicia o estado ao ativar
@@ -57,14 +57,14 @@ public class CatcherAttack : MonoBehaviour
 
         if (ownerNetworkObject == null || _hasHit) return;
 
-        // 2. Verifica se colidiu com um jogador (o "ladr„o")
+        // 2. Verifica se colidiu com um jogador
         if (other.CompareTag("Player"))
         {
             var playerNetworkObject = other.GetComponent<NetworkObject>();
 
             if (playerNetworkObject != null)
             {
-                // 3. Garante que n„o est· acertando o prÛprio guarda
+                // 3. Garante que n„o estÅEacertando o prÛprio guarda
                 if (playerNetworkObject.OwnerClientId != ownerNetworkObject.OwnerClientId)
                 {
                     // ObtÈm o ID do cliente do jogador atingido
