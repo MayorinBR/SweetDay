@@ -1,6 +1,5 @@
 ﻿using UnityEngine;
 using Unity.Netcode;
-
 public class Coin : NetworkBehaviour
 {
     public int scoreValue = 1;

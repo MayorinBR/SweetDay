@@ -1,12 +1,12 @@
 ﻿using UnityEngine;
 using UnityEngine.UI;
 using Unity.Netcode;
-using System.Collections;
-using TMPro; // Adicionado se o ProgressBar usar TextMeshPro
 
 public class ButtonSpawner : NetworkBehaviour
 {
-    [Header("Coin Spawner Button Settings")]
+    private ButtonManager _buttonManager;
+
+    [Header("Settings")]
     public float timeToStayInZone = 5f;
     public int coinsToSpawn = 5;
     public float coinSpawnRadius = 3f;
@@ -15,119 +15,266 @@ public class ButtonSpawner : NetworkBehaviour
     public GameObject progressBarUIPrefab;
     public Vector3 progressBarOffset = new Vector3(0, 2f, 0);
 
-    private float _currentStayTime = 0f;
+    // Variável de rede para que todos vejam o progresso da barra
+    private NetworkVariable<float> _currentStayTimeNet = new NetworkVariable<float>(
+        0f,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
+
     private GameObject _playerGameObject;
     private Slider _currentProgressBarInstance;
     private GameManager _gameManager;
-    private bool _isPlayerInZone = false; // Novo estado para controlar a entrada/saída
+    private bool _isPlayerInZone = false;
+    private bool _isInitialized = false;
 
-    void Start()
+    void OnEnable()
     {
-        _gameManager = FindFirstObjectByType<GameManager>();
-        gameObject.SetActive(false); // Inicia desativado (será ativado pelo GameManager)
+        // Garante que o botão sempre começa "limpo" quando é ativado
+        // Mas só mexe em network variables se já estiver spawned
+        if (IsSpawned && IsServer)
+        {
+            _isPlayerInZone = false;
+            _currentStayTimeNet.Value = 0f;
+        }
+        _playerGameObject = null;
+    }
+
+    public override void OnNetworkSpawn()
+    {
+        base.OnNetworkSpawn();
+
+        // Garante inicialização em builds
+        InitializeReferences();
+
+        // Registra callback APÓS garantir que está inicializado
+        _currentStayTimeNet.OnValueChanged += OnProgressChanged;
+
+        // Se já tinha progresso ao spawnar, atualiza
+        if (_currentStayTimeNet.Value > 0)
+        {
+            OnProgressChanged(0, _currentStayTimeNet.Value);
+        }
+
+        _isInitialized = true;
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        base.OnNetworkDespawn();
+        _currentStayTimeNet.OnValueChanged -= OnProgressChanged;
+        HideProgressBar();
+    }
+
+    private void InitializeReferences()
+    {
+        if (_gameManager == null)
+        {
+            _gameManager = FindFirstObjectByType<GameManager>();
+        }
+
+        if (_buttonManager == null)
+        {
+            _buttonManager = FindFirstObjectByType<ButtonManager>();
+        }
+    }
+
+    private void OnProgressChanged(float previous, float current)
+    {
+        if (!_isInitialized) return;
+
+        if (current > 0)
+        {
+            if (_currentProgressBarInstance == null)
+            {
+                ShowProgressBar();
+            }
+            UpdateProgressBar(current / timeToStayInZone);
+        }
+        else
+        {
+            HideProgressBar();
+        }
     }
 
     void Update()
     {
-        if (!IsOwner || !_isPlayerInZone) return;
+        if (!_isInitialized) return;
 
-        // Apenas o proprietário (o cliente local) deve processar a lógica do timer
-        _currentStayTime += Time.deltaTime;
-
-        UpdateProgressBar(_currentStayTime / timeToStayInZone);
-
-        if (_currentStayTime >= timeToStayInZone)
+        // Apenas o SERVIDOR processa o incremento do tempo
+        if (IsServer && _isPlayerInZone)
         {
-            // Timer completado
-            _currentStayTime = 0f;
-            HideProgressBar();
-            _isPlayerInZone = false;
+            _currentStayTimeNet.Value += Time.deltaTime;
 
-            // Chama o RPC no servidor
-            if (_gameManager != null)
+            if (_currentStayTimeNet.Value >= timeToStayInZone)
             {
-                // CORREÇÃO CS1061: A assinatura do RPC está correta para a implementação em GameManager
-                _gameManager.SpawnCoinsFromButtonServerRpc(
-                    new NetworkObjectReference(this.NetworkObject), // Referência do próprio objeto
-                    transform.position,
-                    coinsToSpawn,
-                    coinSpawnRadius);
+                FinishButtonServer();
             }
-
-            // Desativa o botão para que não seja usado novamente imediatamente
-            // O GameManager ou o próprio ButtonSpawner pode reativá-lo após um cooldown
-            SetButtonActiveClientRpc(false);
         }
+    }
+
+    private void FinishButtonServer()
+    {
+        if (!IsServer) return;
+
+        // Garante que as referências existem
+        InitializeReferences();
+
+        // 1. Spawna as moedas para todos (via GameManager)
+        if (_gameManager != null)
+        {
+            _gameManager.SpawnCoinsFromButtonServerRpc(
+                new NetworkObjectReference(this.NetworkObject),
+                transform.position,
+                coinsToSpawn,
+                coinSpawnRadius
+            );
+        }
+        else
+        {
+            Debug.LogError($"[ButtonSpawner] GameManager is null when trying to spawn coins!");
+        }
+
+        // 2. Avisa o Manager para desativar este botão e marcar o respawn
+        if (_buttonManager != null)
+        {
+            _buttonManager.OnButtonCompleted(this);
+        }
+        else
+        {
+            Debug.LogError($"[ButtonSpawner] ButtonManager is null when trying to complete button!");
+        }
+
+        // 3. Reseta o tempo para o próximo uso
+        _currentStayTimeNet.Value = 0f;
+    }
+
+    // Chamado pelo ButtonManager para limpar o estado visual
+    public void ResetButton()
+    {
+        // Reseta TODOS os estados
+        if (IsServer)
+        {
+            _currentStayTimeNet.Value = 0f;
+            _isPlayerInZone = false; 
+        }
+
+        _playerGameObject = null; // Limpa referência do jogador
+
+        // Limpa a UI local também
+        HideProgressBar();
     }
 
     void OnTriggerEnter(Collider other)
     {
-        // Verifica se o objeto que entrou é um jogador e se ele é o jogador local deste cliente
-        if (other.CompareTag("Player") && other.GetComponent<NetworkObject>() != null && other.GetComponent<NetworkObject>().IsOwner)
+        if (!_isInitialized) return;
+
+        // Detecta se QUALQUER jogador entrou (seja host ou client)
+        if (other.CompareTag("Player"))
         {
             _playerGameObject = other.gameObject;
-            _isPlayerInZone = true;
-            ShowProgressBar();
+
+            if (IsServer)
+            {
+                _isPlayerInZone = true;
+            }
+            else
+            {
+                NotifyServerPlayerEnteredServerRpc(true);
+            }
         }
     }
 
     void OnTriggerExit(Collider other)
     {
-        // Verifica se o objeto que saiu é um jogador e se ele é o jogador local deste cliente
-        if (other.CompareTag("Player") && other.GetComponent<NetworkObject>() != null && other.GetComponent<NetworkObject>().IsOwner)
+        if (!_isInitialized) return;
+
+        if (other.CompareTag("Player") && other.gameObject == _playerGameObject)
         {
-            _currentStayTime = 0f;
-            _isPlayerInZone = false;
-            HideProgressBar();
+            _playerGameObject = null;
+
+            if (IsServer)
+            {
+                _isPlayerInZone = false;
+                _currentStayTimeNet.Value = 0f; // Reseta se sair
+            }
+            else
+            {
+                NotifyServerPlayerEnteredServerRpc(false);
+            }
         }
     }
 
-    [ClientRpc]
-    public void SetButtonActiveClientRpc(bool isActive)
+    [ServerRpc(RequireOwnership = false)]
+    void NotifyServerPlayerEnteredServerRpc(bool inside)
     {
-        gameObject.SetActive(isActive);
+        _isPlayerInZone = inside;
+        if (!inside)
+        {
+            _currentStayTimeNet.Value = 0f;
+        }
     }
+
+    // --- Lógica de UI (Barra de Carregamento) ---
 
     private void ShowProgressBar()
     {
-        if (_playerGameObject == null || progressBarUIPrefab == null) return;
-
-        // Tenta encontrar a barra de progresso já existente para não instanciar múltiplas
-        if (_currentProgressBarInstance != null)
+        if (_currentProgressBarInstance != null) return;
+        if (progressBarUIPrefab == null)
         {
-            _currentProgressBarInstance.gameObject.SetActive(true);
+            Debug.LogError($"[ButtonSpawner] progressBarUIPrefab is null!");
             return;
         }
 
-        GameObject progressBarGO = Instantiate(progressBarUIPrefab, _playerGameObject.transform.position + progressBarOffset, Quaternion.identity);
-        // O progressBarGO é o Canvas/Root. O Slider está dentro.
+        GameObject progressBarGO = Instantiate(
+            progressBarUIPrefab,
+            transform.position + progressBarOffset,
+            Quaternion.identity
+        );
+
+        progressBarGO.transform.SetParent(transform); // Fixa a barra no botão
         _currentProgressBarInstance = progressBarGO.GetComponentInChildren<Slider>();
 
         if (_currentProgressBarInstance != null)
         {
-            _currentProgressBarInstance.gameObject.SetActive(true);
-            _currentProgressBarInstance.minValue = 0;
-            _currentProgressBarInstance.maxValue = timeToStayInZone; // O máximo deve ser o tempo total
-            _currentProgressBarInstance.value = _currentStayTime;
+            _currentProgressBarInstance.maxValue = 1f; // Usaremos 0 a 1
+            _currentProgressBarInstance.value = 0f;
+        }
+        else
+        {
+            Debug.LogError($"[ButtonSpawner] Could not find Slider in progressBarUIPrefab!");
         }
     }
 
-    private void UpdateProgressBar(float progress)
+    private void UpdateProgressBar(float progressNormalized)
     {
         if (_currentProgressBarInstance != null)
         {
-            // O valor aqui já é o tempo atual (_currentStayTime) e o maxValue é o timeToStayInZone.
-            _currentProgressBarInstance.value = _currentStayTime;
+            _currentProgressBarInstance.value = Mathf.Clamp01(progressNormalized);
         }
     }
 
     private void HideProgressBar()
     {
-        // Destrói o objeto pai, que contém o Canvas e o Slider
         if (_currentProgressBarInstance != null)
         {
-            Destroy(_currentProgressBarInstance.transform.root.gameObject);
+            // Destrói apenas o GameObject da barra (progressBarGO)
+            if (_currentProgressBarInstance.transform.parent != null)
+            {
+                Destroy(_currentProgressBarInstance.transform.parent.gameObject);
+            }
+            else
+            {
+                Destroy(_currentProgressBarInstance.gameObject);
+            }
             _currentProgressBarInstance = null;
         }
+    }
+
+    // Debug helper
+    void OnDrawGizmosSelected()
+    {
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(transform.position, coinSpawnRadius);
     }
 }

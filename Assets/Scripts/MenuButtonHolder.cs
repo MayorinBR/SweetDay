@@ -1,7 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
-
 public class MenuButtonHolder : MonoBehaviour
 {
     [Header("Referências de Botões")]
@@ -11,6 +10,7 @@ public class MenuButtonHolder : MonoBehaviour
     public TMP_Dropdown sceneDropdown;
     public TMP_Dropdown playerTypeDropdown;
     public TMP_InputField joinCodeInput;
+    public TMP_Dropdown localPlayersDropdown;
 
     void Start()
     {
@@ -25,12 +25,18 @@ public class MenuButtonHolder : MonoBehaviour
 
     public void ReconnectButtons()
     {
-        Debug.Log("Reconectando botões...");
-
+        //Debug.Log("Reconectando botões...");
+        GameObject currentPanel = this.gameObject;
         // Atualizar referências no MenuManager
         if (MenuManager.Instance != null)
         {
-            MenuManager.Instance.mainMenuPanel = transform.parent?.gameObject;
+#if UNITY_ANDROID || UNITY_IOS
+            // Se estamos no mobile, só atualizamos a referência de mobilePanel
+            MenuManager.Instance.mobilePanel = transform.parent?.gameObject;
+#else
+            // Se estamos no PC/Editor, só atualizamos a referência de pcPanel
+            MenuManager.Instance.pcPanel = transform.parent?.gameObject;
+#endif
 
             if (sceneDropdown != null)
             {
@@ -50,6 +56,12 @@ public class MenuButtonHolder : MonoBehaviour
             {
                 MenuManager.Instance.joinCodeInput = joinCodeInput;
             }
+
+            if (localPlayersDropdown != null)
+            {
+                localPlayersDropdown.onValueChanged.RemoveAllListeners();
+                localPlayersDropdown.onValueChanged.AddListener(MenuManager.Instance.OnLocalPlayerCountSelected);
+            }
         }
 
         // Configurar botões
@@ -57,27 +69,27 @@ public class MenuButtonHolder : MonoBehaviour
         {
             hostButton.onClick.RemoveAllListeners();
             hostButton.onClick.AddListener(OnHostButtonClicked);
-            Debug.Log("Botão Host reconectado");
+            //Debug.Log("Botão Host reconectado");
         }
 
         if (joinButton != null)
         {
             joinButton.onClick.RemoveAllListeners();
             joinButton.onClick.AddListener(OnJoinButtonClicked);
-            Debug.Log("Botão Join reconectado");
+            //Debug.Log("Botão Join reconectado");
         }
 
         if (quitButton != null)
         {
             quitButton.onClick.RemoveAllListeners();
             quitButton.onClick.AddListener(OnQuitButtonClicked);
-            Debug.Log("Botão Quit reconectado");
+            //Debug.Log("Botão Quit reconectado");
         }
     }
 
     private void OnHostButtonClicked()
     {
-        Debug.Log("Host button clicked");
+        //Debug.Log("Host button clicked");
         if (MenuManager.Instance != null)
         {
             MenuManager.Instance.StartHost();
@@ -96,7 +108,7 @@ public class MenuButtonHolder : MonoBehaviour
 
     private void OnJoinButtonClicked()
     {
-        Debug.Log("Join button clicked");
+        //Debug.Log("Join button clicked");
         if (MenuManager.Instance != null)
         {
             MenuManager.Instance.JoinGame();
@@ -105,7 +117,7 @@ public class MenuButtonHolder : MonoBehaviour
 
     private void OnQuitButtonClicked()
     {
-        Debug.Log("Quit button clicked");
+        //Debug.Log("Quit button clicked");
         if (MenuManager.Instance != null)
         {
             MenuManager.Instance.QuitGame();
@@ -124,17 +136,17 @@ public class MenuButtonHolder : MonoBehaviour
             if (buttonName.Contains("host") || buttonName.Contains("criar"))
             {
                 hostButton = button;
-                Debug.Log($"Botão Host encontrado: {button.name}");
+                //Debug.Log($"Botão Host encontrado: {button.name}");
             }
             else if (buttonName.Contains("join") || buttonName.Contains("entrar"))
             {
                 joinButton = button;
-                Debug.Log($"Botão Join encontrado: {button.name}");
+                //Debug.Log($"Botão Join encontrado: {button.name}");
             }
             else if (buttonName.Contains("quit") || buttonName.Contains("sair"))
             {
                 quitButton = button;
-                Debug.Log($"Botão Quit encontrado: {button.name}");
+                //Debug.Log($"Botão Quit encontrado: {button.name}");
             }
         }
 
@@ -147,12 +159,12 @@ public class MenuButtonHolder : MonoBehaviour
             if (dropdownName.Contains("scene") || dropdownName.Contains("cena"))
             {
                 sceneDropdown = dropdown;
-                Debug.Log($"Dropdown de cena encontrado: {dropdown.name}");
+                //Debug.Log($"Dropdown de cena encontrado: {dropdown.name}");
             }
             else if (dropdownName.Contains("player") || dropdownName.Contains("tipo"))
             {
                 playerTypeDropdown = dropdown;
-                Debug.Log($"Dropdown de tipo encontrado: {dropdown.name}");
+                //Debug.Log($"Dropdown de tipo encontrado: {dropdown.name}");
             }
         }
 
@@ -161,7 +173,7 @@ public class MenuButtonHolder : MonoBehaviour
         if (input != null)
         {
             joinCodeInput = input;
-            Debug.Log($"Input field encontrado: {input.name}");
+            //Debug.Log($"Input field encontrado: {input.name}");
         }
 
         // Reconectar após encontrar

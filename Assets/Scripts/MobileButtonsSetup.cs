@@ -5,30 +5,31 @@ using System.Linq;
 
 public class MobileButtonsSetup : MonoBehaviour
 {
-    // Arraste os botões do Inspector para cá
     [Header("Runner Buttons")]
-    public Button dashButton; // Z
-    public Button collectButton; // X
-    public Button dropButton; // C
+    public Button dashButton;
+    public Button collectButton;
+    public Button dropButton;
 
     [Header("Catcher Buttons")]
-    public Button attackButton; // X
+    public Button attackButton;
 
     private bool _isSetupComplete = false;
+    // Adicionamos esta variável para monitorar se o player atual ainda existe
+    private GameObject _currentPlayerTracked;
 
     private void Start()
     {
 #if UNITY_EDITOR || UNITY_ANDROID || UNITY_IOS
-        // 1. Desliga todos os botões por padrão no início
         SetButtonVisibility(false);
 
         if (NetworkManager.Singleton != null)
         {
-            // 2. Tenta configurar imediatamente se já estiver conectado (Host/Server)
             FindAndSetupButtons();
-
-            // 3. Subscreve ao evento de conexão do cliente (importante para clientes que se conectam depois)
-            NetworkManager.Singleton.OnClientConnectedCallback += (clientId) => FindAndSetupButtons();
+            // Tenta reconfigurar quando alguém conecta
+            NetworkManager.Singleton.OnClientConnectedCallback += (clientId) => {
+                _isSetupComplete = false;
+                FindAndSetupButtons();
+            };
         }
 #else
         gameObject.SetActive(false);
@@ -38,99 +39,84 @@ public class MobileButtonsSetup : MonoBehaviour
     private void Update()
     {
 #if UNITY_EDITOR || UNITY_ANDROID || UNITY_IOS
-        if (!_isSetupComplete && NetworkManager.Singleton != null && NetworkManager.Singleton.IsClient)
+        // Se o player que estávamos seguindo foi destruído (nova partida), 
+        // ou se nunca terminamos o setup, tentamos encontrar o novo player.
+        if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsClient)
         {
-            FindAndSetupButtons();
+            if (!_isSetupComplete || _currentPlayerTracked == null)
+            {
+                FindAndSetupButtons();
+            }
         }
 #endif
     }
 
-    private void FindAndSetupButtons()
+    public void FindAndSetupButtons()
     {
-        // Garante que não tentamos configurar a UI antes que o NetworkManager esteja ativo
-        if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsClient)
-        {
-            return;
-        }
-
-        // Tenta encontrar o Runner local
-        PlayerMovement runner = FindObjectsByType<PlayerMovement>(FindObjectsSortMode.None)
-                                .FirstOrDefault(p => p.IsOwner);
+        // Busca o Player local (Runner)
+        var runner = FindObjectsByType<PlayerMovement>(FindObjectsSortMode.None)
+            .FirstOrDefault(p => p.IsOwner);
 
         if (runner != null)
         {
+            _currentPlayerTracked = runner.gameObject;
             SetupRunnerButtons(runner);
-            _isSetupComplete = true; // Marca como completo
+            _isSetupComplete = true;
             return;
         }
 
-        // Tenta encontrar o Catcher local
-        Guard guard = FindObjectsByType<Guard>(FindObjectsSortMode.None)
-                        .FirstOrDefault(g => g.IsOwner);
+        // Se não achou Runner, busca o Guard local (Catcher)
+        var guard = FindObjectsByType<Guard>(FindObjectsSortMode.None)
+            .FirstOrDefault(g => g.IsOwner);
 
         if (guard != null)
         {
-            SetupGuardButtons(guard);
-            _isSetupComplete = true; // Marca como completo
+            _currentPlayerTracked = guard.gameObject;
+            SetupCatcherButtons(guard);
+            _isSetupComplete = true;
             return;
         }
-
-        // Se nenhum jogador local foi encontrado (e o cliente está conectado), _isSetupComplete permanece false
-        // e tentará novamente no próximo Update.
     }
 
     private void SetupRunnerButtons(PlayerMovement runner)
     {
-        // Liga os botões do Runner
-        SetButtonVisibility(true, isRunner: true);
+        SetButtonVisibility(true, true);
 
-        // Remove listeners antigos para evitar chamadas duplicadas
         dashButton.onClick.RemoveAllListeners();
-        collectButton.onClick.RemoveAllListeners();
-        dropButton.onClick.RemoveAllListeners();
-
-        // Adiciona novos listeners
         dashButton.onClick.AddListener(runner.OnDashButtonClicked);
-        collectButton.onClick.AddListener(runner.OnCollectButtonClicked);
-        dropButton.onClick.AddListener(runner.OnDropButtonClicked);
 
-        Debug.Log("Botões Mobile ligados ao Runner local.");
+        collectButton.onClick.RemoveAllListeners();
+        collectButton.onClick.AddListener(runner.OnCollectButtonClicked);
+
+        dropButton.onClick.RemoveAllListeners();
+        dropButton.onClick.AddListener(runner.OnDropButtonClicked);
     }
 
-    private void SetupGuardButtons(Guard guard)
+    private void SetupCatcherButtons(Guard guard)
     {
-        // Liga o botão de ataque do Catcher
-        SetButtonVisibility(true, isRunner: false);
+        SetButtonVisibility(true, false);
 
-        // Remove listeners antigos
         attackButton.onClick.RemoveAllListeners();
-
-        // Adiciona novo listener
         attackButton.onClick.AddListener(guard.OnAttackButtonClicked);
-
-        Debug.Log("Botões Mobile ligados ao Catcher local.");
     }
 
     private void SetButtonVisibility(bool visible, bool isRunner = true)
     {
         if (isRunner)
         {
-            // O Runner usa Z, X, C
             if (dashButton != null) dashButton.gameObject.SetActive(visible);
             if (collectButton != null) collectButton.gameObject.SetActive(visible);
             if (dropButton != null) dropButton.gameObject.SetActive(visible);
             if (attackButton != null) attackButton.gameObject.SetActive(false);
         }
-        else // Catcher
+        else
         {
-            // O Catcher usa apenas o botão de Ataque (X)
             if (dashButton != null) dashButton.gameObject.SetActive(false);
             if (collectButton != null) collectButton.gameObject.SetActive(false);
             if (dropButton != null) dropButton.gameObject.SetActive(false);
             if (attackButton != null) attackButton.gameObject.SetActive(visible);
         }
 
-        // Se visible for false (setup inicial), desliga todos
         if (!visible)
         {
             if (dashButton != null) dashButton.gameObject.SetActive(false);

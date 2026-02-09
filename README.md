@@ -1,33 +1,30 @@
-# SweetDay Clone
+# Sweet Day Clone
 
-Um projeto de jogo desenvolvido em Unity, inspirado no minigame "Animal Crossing: Sweet Day" do Nintendo Land. O objetivo é criar uma experiência divertida e envolvente onde jogadores coletam doces enquanto evitam guardas.
+A Unity-based game project inspired by the "Sweet Day" minigame from Nintendo Land. The goal is to create an asymmetrical experience where players collect coins while evading guards.
 
-## Visão Geral do Jogo
+## Game Overview
 
-Em "SweetDay Clone", os jogadores assumem o papel de colecionadores de doces em um mapa vibrante. O desafio é coletar o máximo de doces possível antes que o tempo acabe ou antes de ser capturado pelos guardas. Power-ups especiais aparecerão para ajudar os jogadores a alcançar seus objetivos, oferecendo bônus de velocidade ou outras vantagens estratégicas.
+In "Sweet Day Clone," players are divided into Runners and Catchers. Runners must collect coins to win, but the weight of the coins makes them slower and more visible. Catchers must work together to corner and hit the Runners before the score goal is reached or time runs out.
+## Implemented Features
 
-## Funcionalidades Implementadas (até o momento)
+* **Asymmetrical Movement:** Distinct movement systems for Runners (fast) and Catchers (strategic) with physics and gravity support.
+* **Dynamic Weight and Scaling System:** The Runner's backpack grows visually and reduces movement speed proportionally to the amount of coins carried.
+* **Coin Interaction:** Mechanics for collecting, carrying, and dropping coins.
+* **Dash Mechanic:** Runners can use the dash ability when the cooldown is avaliable.
+* **Dynamic Button Spawners:** Interactive zones where players must stay for a set time to spawn new coins on the map.
+* **Combat and Shared Life System:** Catchers feature an attack system with animated hitboxes. Damage reduces the Runners' global team lives.
+* **Networking and Synchronization:** Fully implemented via Unity Netcode for GameObjects, ensuring score, timer, and positions are synchronized through NetworkVariables and RPCs.
+* **Lobby and Relay System:** Simplified online connection using randomly generated codes with confused-character filtering.
+* **Cross-Platform & Mobile UI:** Adaptable interface with virtual joysticks and specific buttons that auto-adjust based on the player’s role.
+* **Session Management:** Game Over system with results screen and Restart functionality (Host only).
+* **Scene Management:** At the main screen, player can choose different scene to allow different game levels.
 
-* **Movimentação do Jogador:** Controle básico do personagem principal.
-* **Coleta de Doces:** Doces que podem ser coletados pelo jogador.
-* **Sistema de Pontuação:** Registro e exibição da pontuação do jogador.
-* **Mecânica de Captura:** Interação com os guardas que podem "capturar" o jogador.
-* **Geração de Doces e Power-Ups:** Itens aparecem aleatoriamente no mapa.
-* **Sistema de Spawns e Respawns:** Jogadores e guardas reaparecem em locais definidos.
-* **Condições de Vitória/Derrota:** Jogo com tempo limite e objetivo de pontuação.
-* **Interface do Usuário (UI):** Exibição da pontuação e do tempo restante.
-* **Assets de Placeholder:** Modelos e texturas simples para prototipagem.
-* **Sons e Música (Placeholders):** Áudio básico para feedback e atmosfera.
+## Planned Features (Roadmap)
 
-## Como Jogar (seja construído)
-
-1.  Baixe a versão mais recente do jogo [link para a release, se houver].
-2.  Descompacte o arquivo.
-3.  Execute o `SweetDayClone.exe` (ou o executável correspondente para seu sistema operacional).
-
-## Configuração do Ambiente de Desenvolvimento
-
-Para rodar e modificar este projeto, você precisará:
-
-* **Unity Hub:** Recomenda-se a versão LTS mais recente do Unity Editor.
-* **Git:** Para controle de versão.
+* **Local Multiplayer (Split-Screen):** Support for up to 4 players on the same device with split-screen for Runners.
+* **Power-Up System:** Random map items providing invisibility, coin magnetism, speed boosts...
+* **Catcher Abilities:** Invisible traps with a placement limit (max 3) and cooldowns.
+* **Alternative Modes:** "Master Collector" and "Escape Gate" alternative modes.
+* **Interactive Gimmicks:** Some objects in the scene can be interracted with, allowing a more strategic and diverse gameplay.
+* **Customization:** Player visual customization includinding accessories and skin color variants.
+* **Advanced Audio System:** Audio Mixer for BGM and SFX.

@@ -1,7 +1,6 @@
 ﻿using UnityEngine;
 using Unity.Netcode;
 using System.Collections.Generic;
-
 public class CoinSpawner : NetworkBehaviour
 {
     public GameObject coinPrefab;

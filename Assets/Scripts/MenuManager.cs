@@ -12,51 +12,51 @@ public class MenuManager : MonoBehaviour
     public static MenuManager Instance { get; private set; }
 
     [Header("UI Elements")]
-    public GameObject mainMenuPanel;
+    public GameObject pcPanel;
+    public GameObject mobilePanel;
 
     [Header("Menu Options")]
     public TMP_Dropdown sceneDropdown;
     public TMP_Dropdown playerTypeDropdown;
+    public TMP_Dropdown localPlayersDropdown;
 
     [Header("Join Game")]
     public TMP_InputField joinCodeInput;
 
     private NetworkConnectionManager _connectionManager;
-    private string _selectedScene = "TestScene";
+    private string _selectedScene = "TestScene_Flat";
 
     void Awake()
     {
         // GARANTIR QUE APENAS UMA INSTÂNCIA EXISTE
         if (Instance != null && Instance != this)
         {
-            Debug.Log($"Destruindo MenuManager duplicado: {gameObject.name}");
             Destroy(gameObject);
             return;
         }
 
         Instance = this;
-        DontDestroyOnLoad(gameObject); // IMPEDIR QUE SEJA DESTRUÍDO AO TROCAR DE CENA
-
-        Debug.Log($"MenuManager inicializado e persistente: {gameObject.name}");
+        DontDestroyOnLoad(gameObject);
     }
 
     void Start()
     {
-        // Garantir que a instância está correta
-        if (Instance == null)
-        {
-            Instance = this;
-            DontDestroyOnLoad(gameObject);
-        }
-
         _connectionManager = NetworkConnectionManager.Instance;
+
+        // Garantir que a instância está correta
+        if (_connectionManager == null)
+        {
+            GameObject connectionManagerObj = new GameObject("NetworkConnectionManager");
+            _connectionManager = connectionManagerObj.AddComponent<NetworkConnectionManager>();
+            DontDestroyOnLoad(connectionManagerObj);
+        }
 
         // Configurar dropdowns
         if (sceneDropdown != null)
         {
             sceneDropdown.options.Clear();
-            sceneDropdown.options.Add(new TMP_Dropdown.OptionData("TestScene"));
-            sceneDropdown.options.Add(new TMP_Dropdown.OptionData("BeachScene"));
+            sceneDropdown.options.Add(new TMP_Dropdown.OptionData("TestScene_Flat"));
+            sceneDropdown.options.Add(new TMP_Dropdown.OptionData("TestScene_Hill"));
 
             if (sceneDropdown.options.Count > 0)
             {
@@ -69,7 +69,12 @@ public class MenuManager : MonoBehaviour
         if (playerTypeDropdown != null)
         {
             playerTypeDropdown.onValueChanged.AddListener(OnPlayerTypeSelected);
+            // Só executa se o dropdown realmente existir
             OnPlayerTypeSelected(playerTypeDropdown.value);
+        }
+        else
+        {
+            Debug.LogWarning("MenuManager: playerTypeDropdown não foi atribuído no Inspector!");
         }
 
         if (joinCodeInput != null)
@@ -77,6 +82,24 @@ public class MenuManager : MonoBehaviour
             joinCodeInput.onValidateInput += DelegateOnValidateInput;
             joinCodeInput.characterLimit = 6;
             joinCodeInput.contentType = TMP_InputField.ContentType.Alphanumeric;
+        }
+
+        if (localPlayersDropdown != null)
+        {
+            // Limpar opções existentes
+            localPlayersDropdown.ClearOptions();
+
+            // Adicionar opções de 1 a 4 jogadores locais
+            List<TMP_Dropdown.OptionData> options = new List<TMP_Dropdown.OptionData>();
+            for (int i = 1; i <= 4; i++)
+            {
+                options.Add(new TMP_Dropdown.OptionData($"{i} Player{(i > 1 ? "s" : "")}"));
+            }
+            localPlayersDropdown.AddOptions(options);
+
+            localPlayersDropdown.onValueChanged.AddListener(OnLocalPlayerCountSelected);
+            // Definir valor inicial
+            OnLocalPlayerCountSelected(localPlayersDropdown.value);
         }
 
         // Registrar para eventos de mudança de cena
@@ -95,7 +118,14 @@ public class MenuManager : MonoBehaviour
     {
         if (scene.name == "MenuScene")
         {
+            // Força o encerramento da rede ao voltar para o menu
+            if (NetworkManager.Singleton != null)
+            {
+                NetworkManager.Singleton.Shutdown();
+            }
+
             UIManager.Instance.ShowMainMenuUI();
+            SetupPlatformUI(); // Garante que o painel correto (PC/Mobile) apareça
         }
         else // Assume que é a cena de jogo
         {
@@ -136,6 +166,14 @@ public class MenuManager : MonoBehaviour
         _connectionManager.SetPlayerType(isRunner);
     }
 
+    public void OnLocalPlayerCountSelected(int index)
+    {
+        // index 0 = 1 player, index 1 = 2 players, etc.
+        int playerCount = index + 1;
+        GameSettings.LocalPlayerCount = playerCount;
+        Debug.Log($"[MenuManager] Número de jogadores locais definido para: {GameSettings.LocalPlayerCount}");
+    }
+
     // ADICIONAR getter para cena selecionada
     public string GetSelectedScene()
     {
@@ -143,7 +181,7 @@ public class MenuManager : MonoBehaviour
         {
             return sceneDropdown.options[sceneDropdown.value].text;
         }
-        return "TestScene";
+        return "TestScene_Flat";
     }
 
     // ====================================================================
@@ -162,14 +200,14 @@ public class MenuManager : MonoBehaviour
                 bool isCatcher = playerTypeDropdown.value == 1;
                 _connectionManager.SetPlayerType(isCatcher);
 
-                Debug.Log($"=== NOVA PARTIDA: Host como {(isCatcher ? "Catcher" : "Runner")} ===");
+                //Debug.Log($"=== NOVA PARTIDA: Host como {(isCatcher ? "Catcher" : "Runner")} ===");
 
                 // 2. Configurar payload ANTES de iniciar
                 byte[] connectionPayload = _connectionManager.GetConnectionPayload();
                 if (NetworkManager.Singleton != null && NetworkManager.Singleton.NetworkConfig != null)
                 {
                     NetworkManager.Singleton.NetworkConfig.ConnectionData = connectionPayload;
-                    Debug.Log($"Payload configurado: {(PlayerType)connectionPayload[0]}");
+                    //Debug.Log($"Payload configurado: {(PlayerType)connectionPayload[0]}");
                 }
 
                 string sceneName = _selectedScene;
@@ -198,7 +236,7 @@ public class MenuManager : MonoBehaviour
         {
             hostButton.interactable = interactable;
             hostButton.GetComponentInChildren<TextMeshProUGUI>().text =
-                interactable ? "Host Game" : "Preparando...";
+                interactable ? "Host Game" : "Loading...";
         }
     }
 
@@ -289,12 +327,26 @@ public class MenuManager : MonoBehaviour
 #endif
     }
 
+    private void SetupPlatformUI()
+    {
+        // Primeiro, desativa ambos para evitar conflito
+        if (pcPanel != null) pcPanel.SetActive(false);
+        if (mobilePanel != null) mobilePanel.SetActive(false);
+
+#if UNITY_ANDROID || UNITY_IOS
+        // Ativa o painel Mobile se estiver no Android ou iOS
+        if(mobilePanel != null) mobilePanel.SetActive(true);
+        Debug.Log("Menu: Carregando interface Mobile");
+#else
+        // Ativa o painel PC para Windows, Mac, Linux ou Editor
+        if (pcPanel != null) pcPanel.SetActive(true);
+        Debug.Log("Menu: Carregando interface PC");
+#endif
+    }
+
     public void ShowMainMenu()
     {
-        if (mainMenuPanel != null)
-        {
-            mainMenuPanel.SetActive(true);
-        }
+        SetupPlatformUI();
         // Assegure que o UI Manager na cena principal (Menu) esteja ativo, se houver um.
         var uiManager = FindFirstObjectByType<UIManager>(FindObjectsInactive.Include);
         if (uiManager != null)

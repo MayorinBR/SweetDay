@@ -2,12 +2,15 @@
 using Unity.Netcode;
 using System.Collections;
 using System.Collections.Generic;
+using UnityEngine.InputSystem;
 
 /// <summary>
 /// Controls the movement of the player character in a networked environment.
 /// </summary>
 public class PlayerMovement : NetworkBehaviour
 {
+    private Vector2 _inputMove;
+
     // Public and Inspector-visible variables
     [Header("Movement Settings")]
     public float moveSpeed = 5f;
@@ -43,6 +46,7 @@ public class PlayerMovement : NetworkBehaviour
     public NetworkVariable<int> coinsCarried = new NetworkVariable<int>(0);
     public NetworkVariable<bool> IsRunner = new NetworkVariable<bool>(true);
     public NetworkVariable<float> DashCooldownRemaining = new NetworkVariable<float>(0f);
+    public NetworkVariable<int> playerNumber = new NetworkVariable<int>(0);
 
     // Variables for smoothing movement on remote clients
     private Vector3 _networkPosition;
@@ -103,6 +107,18 @@ public class PlayerMovement : NetworkBehaviour
     public override void OnNetworkSpawn()
     {
         base.OnNetworkSpawn();
+        // Atualiza o nome do objeto localmente para facilitar a depuração
+        // O valor será definido pelo servidor
+        playerNumber.OnValueChanged += (oldVal, newVal) =>
+        {
+            gameObject.name = (this is PlayerMovement ? "Runner_P" : "Catcher_P") + newVal;
+        };
+
+        // Se o valor já estiver definido ao spawnar (para quem entra depois)
+        if (playerNumber.Value > 0)
+        {
+            gameObject.name = (this is PlayerMovement ? "Runner_P" : "Catcher_P") + playerNumber.Value;
+        }
 
         // Initialize components and variables
         baseMoveSpeed = moveSpeed; // Armazena a velocidade base
@@ -117,6 +133,16 @@ public class PlayerMovement : NetworkBehaviour
             // Inicializa cooldown com valor da NetworkVariable
             _localDashCooldown = DashCooldownRemaining.Value;
             _dashOnCooldown = DashCooldownRemaining.Value > 0f;
+
+            // Força o setup dos botões mobile a rodar novamente para este novo objeto
+            var mobileUI = FindFirstObjectByType<MobileButtonsSetup>();
+            if (mobileUI != null) mobileUI.FindAndSetupButtons();
+
+            var ssm = FindFirstObjectByType<SplitScreenManager>();
+            if (ssm != null)
+            {
+                ssm.RefreshCameras();
+            }
 
             // Encontra o UIManager na cena
             UIManager uiManager = FindFirstObjectByType<UIManager>();
@@ -152,6 +178,12 @@ public class PlayerMovement : NetworkBehaviour
         }
     }
 
+    public void OnMove(InputAction.CallbackContext context)
+    {
+        if (!IsOwner) return;
+        _inputMove = context.ReadValue<Vector2>();
+    }
+
     private void Start()
     {
         _gameManager = FindFirstObjectByType<GameManager>();
@@ -180,83 +212,37 @@ public class PlayerMovement : NetworkBehaviour
 
     void Update()
     {
-        if (IsOwner)
+        // PASSO 1: O Servidor é o ÚNICO que diminui o tempo da NetworkVariable
+        if (IsServer)
         {
             if (DashCooldownRemaining.Value > 0f)
             {
                 DashCooldownRemaining.Value -= Time.deltaTime;
-
-                // Garante que o valor não se torne negativo
-                if (DashCooldownRemaining.Value < 0f)
-                {
-                    DashCooldownRemaining.Value = 0f;
-                }
+                if (DashCooldownRemaining.Value < 0f) DashCooldownRemaining.Value = 0f;
             }
         }
 
-        // Apenas para o movimento durante a coleta
+        if (!IsOwner) return;
+
+        // PASSO 2: O Cliente apenas lê o valor para a lógica visual (coleta, movimento, etc.)
         if (_isCollecting)
         {
-            // Ainda aplica a gravidade mesmo durante a coleta
             ApplyGravity();
-
-            // Atualiza interpolação para clientes remotos
-            if (!IsOwner)
-            {
-                transform.position = Vector3.Lerp(transform.position, _networkPosition, Time.deltaTime * networkMovementSmoothness);
-                transform.rotation = Quaternion.Slerp(transform.rotation, _networkRotation, Time.deltaTime * networkMovementSmoothness);
-            }
-
             return;
         }
 
-        // ATUALIZAÇÃO DO COOLDOWN LOCAL (para todos os Owners)
-        /*if (_localDashCooldown > 0f)
-        {
-            _localDashCooldown -= Time.deltaTime;
-            if (_localDashCooldown <= 0f)
-            {
-                _localDashCooldown = 0f;
-                _dashOnCooldown = false;
-            }
-
-            // Se for Host/Server, atualiza a NetworkVariable
-            if (IsServer)
-            {
-                DashCooldownRemaining.Value = _localDashCooldown;
-            }
-            else
-            {
-                // Client apenas: Sincroniza com server periodicamente
-                SyncDashCooldownServerRpc(_localDashCooldown);
-            }
-        }*/
-
-        if (_gameManager != null && !_gameManager.gameStarted.Value)
-        {
-            return;
-        }
-
-        // Envia a posição e rotação para o servidor
+        //if (_gameManager != null && !_gameManager.gameStarted.Value) return;
+        /*
+        // Sincronização de posição (RPC)
         if (Time.time - _lastPositionUpdateTime > POSITION_UPDATE_INTERVAL)
         {
             SubmitPositionServerRpc(transform.position, transform.rotation);
             _lastPositionUpdateTime = Time.time;
         }
-
+        */
         ApplyGravity();
         HandlePlayerInput();
     }
-    /*
-    [ServerRpc]
-    private void SyncDashCooldownServerRpc(float clientCooldown)
-    {
-        // Server recebe o cooldown do client e atualiza a NetworkVariable
-        if (clientCooldown < DashCooldownRemaining.Value)
-        {
-            DashCooldownRemaining.Value = clientCooldown;
-        }
-    }*/
 
     /// <summary>
     /// Aplica a gravidade ao CharacterController.
@@ -305,9 +291,8 @@ public class PlayerMovement : NetworkBehaviour
 
         if (_characterController == null) return;
 
-        // 1. INPUT DE MOVIMENTO (PC e Mobile)
-        float horizontalInput = 0f;
-        float verticalInput = 0f;
+        float horizontalInput = _inputMove.x;
+        float verticalInput = _inputMove.y;
 
         // Tenta obter o input do Mobile Input State primeiro
         bool isMobileInput = _mobileMoveVector.magnitude > 0.1f;
@@ -320,8 +305,10 @@ public class PlayerMovement : NetworkBehaviour
         else
         {
             // Fallback: Usa o input do PC
-            horizontalInput = Input.GetAxis("Horizontal");
-            verticalInput = Input.GetAxis("Vertical");
+            //horizontalInput = Input.GetAxis("Horizontal");
+            //verticalInput = Input.GetAxis("Vertical");
+            horizontalInput = _inputMove.x;
+            verticalInput = _inputMove.y;
         }
 
         // Calcule o movimento horizontal (X e Z)
@@ -342,7 +329,7 @@ public class PlayerMovement : NetworkBehaviour
         }
 
         // Input logic for collecting a coin ('X' PC or Mobile Button)
-        bool collectInput = Input.GetKeyDown(KeyCode.X) || _collectPressed;
+        bool collectInput = _collectPressed;
         if (collectInput)
         {
             if (_currentNearbyCoin != null && _currentNearbyCoin.IsSpawned)
@@ -357,7 +344,7 @@ public class PlayerMovement : NetworkBehaviour
         }
 
         // Input logic for dropping a coin ('C' PC or Mobile Button)
-        bool dropInput = Input.GetKeyDown(KeyCode.C) || _dropPressed;
+        bool dropInput = _dropPressed;
 
         // 2. Verifica se há moedas e se o jogador não está em processo de coleta
         if (dropInput)
@@ -373,11 +360,11 @@ public class PlayerMovement : NetworkBehaviour
         }
 
         // 2. INPUT DE DASH (PC: Z, Mobile: Botão Z)
-        bool pcDashInput = Input.GetKeyDown(KeyCode.Z);
-        bool mobileDashInput = _dashPressed;
+        bool dashInput = _dashPressed;
+        //bool mobileDashInput = _dashPressed;
 
         // VERIFICA O COOLDOWN DA NETWORKVARIABLE (em vez do local)
-        if ((pcDashInput || mobileDashInput) && IsRunner.Value &&
+        if ((dashInput) && IsRunner.Value &&
             DashCooldownRemaining.Value <= 0f && !_isDashing && !_isCollecting)
         {
             _dashOnCooldown = true;
@@ -393,7 +380,46 @@ public class PlayerMovement : NetworkBehaviour
         _dropPressed = false;
     }
 
+    [ClientRpc]
+    public void TeleportPlayerClientRpc(Vector3 newPosition)
+    {
+        CharacterController cc = GetComponent<CharacterController>();
 
+        // PASSO 1: Desativar o CharacterController é OBRIGATÓRIO para teleportar no Unity
+        if (cc != null) cc.enabled = false;
+
+        // PASSO 2: Mover o transform
+        transform.position = newPosition;
+
+        // PASSO 3: Reativar o controller
+        if (cc != null) cc.enabled = true;
+
+        // PASSO 4: IMPORTANTE: Forçar a câmera a atualizar IMEDIATAMENTE
+        // Para o jogador local, precisamos atualizar a câmera associada
+        if (IsOwner)
+        {
+            // Encontra todas as câmeras que podem estar seguindo este jogador
+            CameraFollow[] cameraFollows = FindObjectsByType<CameraFollow>(FindObjectsSortMode.None);
+            foreach (CameraFollow cameraFollow in cameraFollows)
+            {
+                // Verifica se esta câmera está seguindo este jogador
+                if (cameraFollow.Target == transform)
+                {
+                    // Força a câmera a atualizar sua posição imediatamente
+                    cameraFollow.ForcePosition();
+                }
+            }
+
+            // Também verifica o SplitScreenManager
+            SplitScreenManager splitManager = FindFirstObjectByType<SplitScreenManager>();
+            if (splitManager != null)
+            {
+                splitManager.ResetCameraForPlayer(this);
+            }
+        }
+    }
+
+    /*
     // RPC to synchronize player position and rotation
     [ServerRpc(RequireOwnership = false)]
     private void SubmitPositionServerRpc(Vector3 pos, Quaternion rot)
@@ -401,7 +427,7 @@ public class PlayerMovement : NetworkBehaviour
         _networkPosition = pos;
         _networkRotation = rot;
     }
-
+    */
     // RPC that runs on the server to collect a coin
     [ServerRpc]
     private void CollectCoinServerRpc(NetworkObjectReference coinObjectReference)
@@ -463,32 +489,37 @@ public class PlayerMovement : NetworkBehaviour
 
     public int ReceiveHitAndDropCoins_Server(CoinSpawner coinSpawner)
     {
-        if (!IsServer) return 0; // Retorna 0 se não for o servidor
+        if (!IsServer) return 0;
 
         if (IsInvulnerable.Value) return 0;
 
         // 1. Soltar todas as moedas
-        int coinsToDrop = coinsCarried.Value; // << Captura a quantidade ANTES de zerar
+        int coinsToDrop = coinsCarried.Value;
 
-        coinsCarried.Value = 0; // Zera as moedas
-        UpdateMoveSpeed(); // Recalcula a velocidade
+        coinsCarried.Value = 0;
+        UpdateMoveSpeed();
 
-        if (coinsToDrop > 0)
+        if (coinsToDrop > 0 && coinSpawner != null)
         {
-            if (coinSpawner != null)
-            {
-                // Chama o método no CoinSpawner para criar as moedas na rede.
-                coinSpawner.SpawnDroppedCoins_Server(transform.position, coinsToDrop, dropDistance);
-            }
+            // Usar a posição atual deste jogador específico
+            coinSpawner.SpawnDroppedCoins_Server(transform.position, coinsToDrop, dropDistance);
         }
 
-        // 2. Iniciar Invulnerabilidade (apenas no Servidor)
+        // 2. Iniciar Invulnerabilidade apenas para ESTE jogador
         IsInvulnerable.Value = true;
         StartCoroutine(InvulnerabilityTimerCoroutine());
-        StartInvulnerabilityVisualsClientRpc();
+
+        // Chamar para todos os clientes (cada um filtra internamente)
+        StartInvulnerabilityVisualsForAllClientRpc();
 
         // 3. Retorna o valor de moedas perdidas
         return coinsToDrop;
+    }
+
+    [ClientRpc]
+    private void StartInvulnerabilityVisualsForAllClientRpc()
+    {
+        StartCoroutine(FlashVisualsCoroutine(invulnerabilityDuration));
     }
 
     // Corrotina para o timer de invulnerabilidade no Servidor
@@ -498,7 +529,6 @@ public class PlayerMovement : NetworkBehaviour
         IsInvulnerable.Value = false;
     }
 
-    // PlayerMovement.cs
     /// <summary>
     /// Retorna o tempo restante de cooldown (local) para a UI.
     /// </summary>
@@ -564,19 +594,6 @@ public class PlayerMovement : NetworkBehaviour
         }
 
         _isDashing = false;
-    }
-
-    // ClientRpc para iniciar o efeito visual de invulnerabilidade (feedback para todos os clientes)
-    [ClientRpc]
-    private void StartInvulnerabilityVisualsClientRpc()
-    {
-        if (meshRenderer != null)
-        {
-            // Para garantir que não haja corrotinas duplicadas rodando
-            StopCoroutine(nameof(FlashVisualsCoroutine));
-            // Inicia o efeito visual de 3 segundos (coroutine local)
-            StartCoroutine(FlashVisualsCoroutine(invulnerabilityDuration));
-        }
     }
 
     // Corrotina para o efeito de piscar/mudar de cor no Cliente
@@ -697,5 +714,26 @@ public class PlayerMovement : NetworkBehaviour
         {
             Debug.LogWarning($"Backpack scale array size is incorrect. Expected at least {MAX_BACKPACK_LEVELS + 1} elements, but found {backpackScales.Length}.");
         }
+    }
+
+    // Vincula ao "Dash" no Player Input
+    public void OnDash(InputAction.CallbackContext context)
+    {
+        if (!IsOwner || !context.performed) return;
+        _dashPressed = true;
+    }
+
+    // Vincula ao "Collect" no Player Input
+    public void OnCollect(InputAction.CallbackContext context)
+    {
+        if (!IsOwner || !context.performed) return;
+        _collectPressed = true;
+    }
+
+    // Vincula ao "Drop" no Player Input
+    public void OnDrop(InputAction.CallbackContext context)
+    {
+        if (!IsOwner || !context.performed) return;
+        _dropPressed = true;
     }
 }
