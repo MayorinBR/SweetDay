@@ -1,9 +1,8 @@
-﻿using UnityEngine;
+﻿using System.Collections.Generic;
+using System.Linq;
 using Unity.Netcode;
-using System.Collections;
-using UnityEngine.SceneManagement;
-using System.Collections.Generic;
-
+using UnityEngine;
+using UnityEngine.InputSystem;
 public class GameManager : NetworkBehaviour
 {
     public static GameManager Instance { get; private set; }
@@ -12,33 +11,36 @@ public class GameManager : NetworkBehaviour
     // Network Variables (Sincronized)
     // ====================================================================
     public NetworkVariable<int> score = new NetworkVariable<int>(0);
-    public NetworkVariable<int> playerLives = new NetworkVariable<int>(3);
-    public NetworkVariable<float> gameTimer = new NetworkVariable<float>(120.0f);
+    public NetworkVariable<int> playerLives = new NetworkVariable<int>(initialLifes);
+    public NetworkVariable<float> gameTimer = new NetworkVariable<float>(gameDuration);
     public NetworkVariable<bool> gameStarted = new NetworkVariable<bool>(false);
 
-    // ...
+
+    // ====================================================================
+    // Game Variables
+    // ====================================================================
+    private const float gameDuration = 180.0f;
+    private const int initialLifes = 3;
 
     // ====================================================================
     // Variáveis do Inspector
     // ====================================================================
-    public int scoreToWin = 10;
+    public int scoreToWin = 20;
     public GameObject endGamePanel;
-    public CoinSpawner coinSpawner;
     public GameObject guardPrefab;
     public GameObject playerPrefab;
     public Transform[] playerSpawnPoints;
     public Transform[] guardSpawnPoints;
+
+    [Header("Spawners")]
+    public LocalSpawner localSpawner;
+    public CoinSpawner coinSpawner;
 
     // ====================================================================
     // Variáveis Privadas
     // ====================================================================
     private bool gameEnded = false;
     private UIManager _uiManager;
-    private NetworkConnectionManager _connectionManager;
-
-    // Variáveis para controlar os índices de spawn usados
-    private int _currentPlayerSpawnIndex = 0;
-    private int _currentGuardSpawnIndex = 0;
 
     void Awake()
     {
@@ -62,24 +64,13 @@ public class GameManager : NetworkBehaviour
 
         _uiManager = FindFirstObjectByType<UIManager>();
 
-        // REGISTRAR EVENTO DE CARREGAMENTO DE CENA
-        if (NetworkManager.Singleton != null)
-        {
-            NetworkManager.Singleton.SceneManager.OnSceneEvent += OnSceneEvent;
-        }
-        /*
         if (IsServer)
         {
-            // SPAWN AUTOMÁTICO QUANDO NA CENA DE JOGO
-            if (IsGameScene())
+            LocalSpawner spawner = FindFirstObjectByType<LocalSpawner>();
+            if (spawner != null)
             {
-                UIManager.Instance.StartCoroutine(SpawnPlayersAfterSceneLoad());
+                spawner.SpawnLocalPlayers();
             }
-        }
-        */
-        if (IsServer)
-        {
-            // O servidor zera o timer e as vidas
             playerLives.Value = 3;
             gameTimer.Value = 180.0f; // Tempo inicial
         }
@@ -92,26 +83,71 @@ public class GameManager : NetworkBehaviour
         playerLives.OnValueChanged -= OnLivesChanged;
         gameTimer.OnValueChanged -= OnTimerChanged;
         gameStarted.OnValueChanged -= OnGameStartedChanged;
+    }
 
-        if (NetworkManager.Singleton != null)
-        {
-            NetworkManager.Singleton.SceneManager.OnSceneEvent -= OnSceneEvent;
-        }
+    // Classe auxiliar para armazenar o resultado
+    public struct EndGameResult
+    {
+        public bool didLocalPlayerWin;
+        public string winningTeam;
+        public string losingTeam;
+        public string message;
     }
 
     void Update()
     {
-        if (!IsServer) return;
+        if (!IsServer || !gameStarted.Value || gameEnded) return;
 
-        if (gameStarted.Value && !gameEnded)
+        gameTimer.Value -= Time.deltaTime;
+
+        if (gameTimer.Value <= 0)
         {
-            gameTimer.Value -= Time.deltaTime;
+            gameTimer.Value = 0;
+            EndGame(false); // Passar false indica que runners não venceram (Catchers venceram)
+        }
+    }
 
-            if (gameTimer.Value <= 0)
-            {
-                gameTimer.Value = 0;
-                EndGame(false); // Tempo esgotado, jogadores perdem
-            }
+    [ServerRpc]
+    public void EndGameServerRpc(bool runnersWon)
+    {
+        if (gameEnded) return;
+        gameEnded = true;
+
+        // Notifica os clientes passando o resultado
+        NotifyEndGameClientRpc(runnersWon);
+    }
+
+    [ClientRpc]
+    private void NotifyEndGameClientRpc(bool runnersWon)
+    {
+        string message = "";
+
+        // 1. Verificar se o jogador local é Runner ou Guard (Catcher)
+        bool isRunner = false;
+        var localPlayer = NetworkManager.Singleton.LocalClient.PlayerObject;
+
+        if (localPlayer != null)
+        {
+            // Verifica se o objeto local tem o componente PlayerMovement (Runner)
+            isRunner = localPlayer.GetComponent<PlayerMovement>() != null;
+        }
+
+        // 2. Definir a mensagem baseada no time e no resultado
+        if (runnersWon)
+        {
+            message = isRunner ? "Runners Victory!" : "Catchers Lose!";
+        }
+        else
+        {
+            message = isRunner ? "Runners Lose!" : "Catchers Victory!";
+        }
+
+        Debug.Log($"Game Over: {message}");
+
+        // 3. Enviar para o UI
+        if (UIManager.Instance != null)
+        {
+            UIManager.Instance.ShowSimpleEndGame(message);
         }
     }
 
@@ -143,66 +179,69 @@ public class GameManager : NetworkBehaviour
             Debug.LogError("CoinSpawner não encontrado!");
         }
 
-        // Ativar botões
-        ButtonSpawner[] buttons = FindObjectsByType<ButtonSpawner>(FindObjectsSortMode.None);
-        foreach (var button in buttons)
-        {
-            button.SetButtonActiveClientRpc(true);
-        }
-
         //Debug.Log("Jogo iniciado - todos os sistemas ativos");
     }
 
-    public void SpawnPlayerForClient(ulong clientId, PlayerType playerType)
+    private void SpawnPlayerForClient(ulong clientId, PlayerType type)
     {
         if (!IsServer) return;
 
-        // DEBUG LOG EXPANDIDO
-        Debug.Log($"=== SPAWNING: Client {clientId} como {playerType} ===");
-        Debug.Log($"=== PlayerType recebido: {playerType} ===");
+        GameObject prefab = (type == PlayerType.Runner) ? playerPrefab : guardPrefab;
+        Transform[] spawnPoints = (type == PlayerType.Runner) ? playerSpawnPoints : guardSpawnPoints;
 
-        var connectionManager = FindFirstObjectByType<NetworkConnectionManager>();
-        if (connectionManager != null)
-        {
-            PlayerType storedType = connectionManager.GetPlayerType(clientId);
-            Debug.Log($"=== Tipo armazenado no NetworkConnectionManager: {storedType} ===");
-        }
+        // Escolhe um ponto de spawn baseado no ID do cliente para evitar sobreposição
+        int spawnIndex = (int)clientId % spawnPoints.Length;
+        Vector3 spawnPos = spawnPoints[spawnIndex].position;
 
-        if (NetworkManager.Singleton.ConnectedClients.ContainsKey(clientId))
+        GameObject playerObj = Instantiate(prefab, spawnPos, Quaternion.identity);
+        NetworkObject netObj = playerObj.GetComponent<NetworkObject>();
+
+        // O ID visual será o ID da rede + 1 (ex: Client 0 = P1, Client 1 = P2)
+        int displayId = (int)clientId + 1;
+
+        netObj.SpawnAsPlayerObject(clientId);
+
+        // Atribui o identificador antes de spawnar na rede
+        if (type == PlayerType.Runner)
         {
-            var existingPlayer = NetworkManager.Singleton.ConnectedClients[clientId].PlayerObject;
-            if (existingPlayer != null)
+            if (playerObj.TryGetComponent<PlayerMovement>(out var pm))
             {
-                //Debug.Log($"Client {clientId} já tem um objeto de jogador, ignorando spawn duplicado");
-                return;
+                pm.playerNumber.Value = displayId;
+                playerObj.name = "Runner_P" + displayId;
             }
-        }
-
-        GameObject playerPrefabToSpawn = (playerType == PlayerType.Catcher) ? guardPrefab : playerPrefab;
-        Transform[] spawnPoints = (playerType == PlayerType.Catcher) ? guardSpawnPoints : playerSpawnPoints;
-
-        int spawnIndex = 0;
-        if (playerType == PlayerType.Runner)
-        {
-            spawnIndex = _currentPlayerSpawnIndex % playerSpawnPoints.Length;
-            _currentPlayerSpawnIndex++;
         }
         else
         {
-            spawnIndex = _currentGuardSpawnIndex % guardSpawnPoints.Length;
-            _currentGuardSpawnIndex++;
+            if (playerObj.TryGetComponent<Guard>(out var g))
+            {
+                g.playerNumber.Value = displayId;
+                playerObj.name = "Catcher_P" + displayId;
+            }
         }
 
-        Transform spawnPoint = spawnPoints[spawnIndex];
+        Debug.Log($"Spawnado {type} para cliente {clientId} como P{displayId}");
+    }
 
-        GameObject playerObject = Instantiate(playerPrefabToSpawn, spawnPoint.position, spawnPoint.rotation);
-        NetworkObject netObject = playerObject.GetComponent<NetworkObject>();
+    public void SpawnLocalPlayers()
+    {
+        if (!IsServer) return;
 
-        if (netObject != null)
+        Debug.Log($"GameManager: Spawning {GameSettings.LocalPlayerCount} local players");
+
+        // Primeiro spawna o jogador principal (host)
+        var connectionManager = FindFirstObjectByType<NetworkConnectionManager>();
+        if (connectionManager != null)
         {
-            netObject.SpawnAsPlayerObject(clientId);
+            PlayerType hostType = connectionManager.GetPlayerType(NetworkManager.ServerClientId);
+            connectionManager.UpdatePlayerCountServerRpc();
+            SpawnPlayerForClient(NetworkManager.ServerClientId, hostType);
+        }
 
-            //Debug.Log($"Spawned {playerType} for client {clientId} at {spawnPoint.position}");
+        // Depois spawna jogadores locais adicionais (se houver)
+        LocalSpawner spawner = FindFirstObjectByType<LocalSpawner>();
+        if (spawner != null && GameSettings.LocalPlayerCount >= 0)
+        {
+            spawner.SpawnLocalPlayers();
         }
     }
 
@@ -210,17 +249,50 @@ public class GameManager : NetworkBehaviour
     {
         if (!IsServer) return;
 
-        // 1. Spawna todos os jogadores conectados.
+        Debug.Log("=== SPAWNING ALL PLAYERS ===");
+
+        // 1. Contar jogadores locais já spawnados
+        int localPlayersSpawned = 0;
         var connectionManager = FindFirstObjectByType<NetworkConnectionManager>();
+
         if (connectionManager != null)
         {
+            // 2. Spawna jogadores locais primeiro
+            // Verifica dispositivos disponíveis
+            Debug.Log($"Dispositivos disponíveis: {Gamepad.all.Count} gamepads, Teclado: {(Keyboard.current != null ? "Sim" : "Não")}");
+
+            // Aviso se não há dispositivos suficientes
+            if (GameSettings.LocalPlayerCount > 1 && Gamepad.all.Count == 0)
+            {
+                Debug.LogWarning("⚠ AVISO: Multiplayer local ativado mas nenhum gamepad encontrado!");
+                Debug.LogWarning("O jogo continuará, mas alguns jogadores podem não ter controle.");
+            }
+
+            // Spawn normal continua mesmo sem controles suficientes
+            SpawnLocalPlayers();
+
+            // 3. Contar jogadores locais já existentes
+            foreach (var client in NetworkManager.Singleton.ConnectedClientsList)
+            {
+                if (client.ClientId == NetworkManager.ServerClientId)
+                {
+                    localPlayersSpawned += GameSettings.LocalPlayerCount;
+                    break;
+                }
+            }
+
+            connectionManager.UpdatePlayerCountServerRpc();
+
+            // 4. Spawna todos os jogadores remotos conectados
             // Itera sobre todos os clientes conectados e spawna o objeto de jogador para cada um.
             foreach (var client in NetworkManager.Singleton.ConnectedClientsList)
             {
+                // Pula o host se já foi spawnado acima
+                if (client.ClientId == NetworkManager.ServerClientId) continue;
+
                 // Verifica se o objeto de jogador já existe (previne duplicação)
                 if (client.PlayerObject == null)
                 {
-                    // Usa o método existente no Connection Manager e GameManager
                     PlayerType playerType = connectionManager.GetPlayerType(client.ClientId);
                     SpawnPlayerForClient(client.ClientId, playerType);
                 }
@@ -231,20 +303,25 @@ public class GameManager : NetworkBehaviour
             Debug.LogError("NetworkConnectionManager não encontrado. Não foi possível spawnar jogadores.");
         }
 
-        // 2. Inicia o jogo (ativa timer, moedas, etc.)
+        // 5. Inicia o jogo (ativa timer, moedas, etc.)
         StartGame();
+
+        int totalSpawned = NetworkManager.Singleton.ConnectedClientsList.Count;
+        Debug.Log($"Total de jogadores conectados: {totalSpawned}");
+        Debug.Log($"Jogadores locais: {GameSettings.LocalPlayerCount}");
+        Debug.Log($"Jogadores remotos: {totalSpawned - 1}"); // -1 para o host
     }
 
-    public void EndGame(bool won)
+    public void EndGame(bool runnersWon)
     {
         if (!IsServer || gameEnded) return;
         gameEnded = true;
         gameStarted.Value = false; // Para parar o timer
 
-        ShowEndGamePanelClientRpc(won);
-
-        // Despawn de moedas
-        DespawnAllCoins();
+        // Determina quem venceu baseado no resultado
+        // runnersWon = true significa que os Runners venceram
+        // runnersWon = false significa que os Catchers venceram
+        NotifyEndGameClientRpc(runnersWon);
     }
 
     // Método chamado pelo UIManager (RestartGame)
@@ -259,79 +336,60 @@ public class GameManager : NetworkBehaviour
     {
         if (!IsServer) return;
 
-        gameEnded = false;
+        // 1. Limpa jogadores locais extras via LocalSpawner
+        if (localSpawner != null)
+        {
+            localSpawner.DespawnLocalPlayers();
+        }
 
-        // Reset Network Variables
-        score.Value = 0;
-        playerLives.Value = 3;
-        gameTimer.Value = 180.0f;
-        gameStarted.Value = false;
-
-        // Reset do coin spawner
         if (coinSpawner != null)
         {
             coinSpawner.ResetSpawner();
         }
 
-        // Reset posição dos jogadores
-        ResetAllPlayersPositionClientRpc();
+        // 2. Limpa todos os jogadores da rede (Runners e Guards)
+        PlayerMovement[] clients = FindObjectsByType<PlayerMovement>(FindObjectsSortMode.None);
+        foreach (var p in clients) p.GetComponent<NetworkObject>().Despawn();
 
-        // Reset dos botões de spawn
-        ButtonSpawner[] buttons = FindObjectsByType<ButtonSpawner>(FindObjectsSortMode.None);
-        foreach (var button in buttons)
-        {
-            button.SetButtonActiveClientRpc(false);
-        }
+        Guard[] guards = FindObjectsByType<Guard>(FindObjectsSortMode.None);
+        foreach (var g in guards) g.GetComponent<NetworkObject>().Despawn();
 
+        // 3. Reseta variáveis de rede
+        score.Value = 0;
+        playerLives.Value = initialLifes;
+        gameTimer.Value = gameDuration;
+        gameEnded = false;
+
+        // 4. Em vez de recarregar a cena (que causa o spawn duplo), 
+        DespawnAllCoins();
+        coinSpawner.SpawnCoins();
+
+        // O NetworkManager vai re-instanciar o player principal automaticamente se configurado,
+        // mas se você usa LocalSpawner, chame-o aqui:
+        // localSpawner.SpawnLocalPlayers();
+
+        gameStarted.Value = false;
+
+        // Oculta o painel de fim de jogo em todos os clientes
         HideEndGamePanelClientRpc();
+
+        // 5. Reatribui as câmeras para todos os clients
+        ReassignCamerasClientRpc();
+    }
+
+    [ClientRpc]
+    private void ReassignCamerasClientRpc()
+    {
+        SplitScreenManager splitManager = FindFirstObjectByType<SplitScreenManager>();
+        if (splitManager != null)
+        {
+            splitManager.ReassignCamerasAfterReset();
+        }
     }
 
     // ====================================================================
     // NOVOS MÉTODOS PARA CONTROLE DE CENA
     // ====================================================================
-
-    // ADICIONAR método auxiliar para detectar cena de jogo
-    private bool IsGameScene()
-    {
-        string currentScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
-        return currentScene != "MenuScene" && currentScene != "MainMenu";
-    }
-
-    // ADICIONAR corrotina para spawn após carregamento
-    private IEnumerator SpawnPlayersAfterSceneLoad()
-    {
-        //Debug.Log("Aguardando cena carregar completamente...");
-        yield return new WaitForSeconds(1.5f);
-
-        //Debug.Log("Fazendo spawn dos jogadores...");
-
-        foreach (var client in NetworkManager.Singleton.ConnectedClients)
-        {
-            if (client.Value.PlayerObject == null)
-            {
-                PlayerType playerType = NetworkConnectionManager.Instance.GetPlayerType(client.Key);
-                SpawnPlayerForClient(client.Key, playerType);
-                //Debug.Log($"Spawnado {playerType} para cliente {client.Key}");
-            }
-        }
-
-        // Iniciar jogo automaticamente após spawn
-        //StartGame();
-    }
-
-    private void OnSceneEvent(SceneEvent sceneEvent)
-    {
-        if (sceneEvent.SceneEventType == SceneEventType.LoadComplete && IsServer)
-        {
-            // Debug.Log($"Cena {sceneEvent.SceneName} carregada - preparando spawn...");
-
-            if (IsGameScene())
-            {
-                // REMOVA ou COMENTE ESTA LINHA:
-                // StartCoroutine(SpawnPlayersAfterSceneLoad()); 
-            }
-        }
-    }
 
     private void OnGameStartedChanged(bool previous, bool current)
     {
@@ -356,53 +414,31 @@ public class GameManager : NetworkBehaviour
         if (score.Value >= scoreToWin)
         {
             score.Value = scoreToWin;
-            EndGame(true); // Player/Thief Won
+            EndGame(true); // Runners venceram (atingiram a pontuação)
         }
     }
-    /*
-    [ServerRpc(RequireOwnership = false)]
-    public void LoseLifeServerRpc()
-    {
-        if (gameEnded) return;
-
-        playerLives.Value--;
-
-        if (playerLives.Value <= 0)
-        {
-            EndGame(false); // Player/Thief Lost
-        }
-        else
-        {
-            // Teleporta todos os jogadores (ladrões) de volta aos pontos de spawn
-            ResetAllPlayersPositionClientRpc();
-        }
-    }
-    */
 
     [ServerRpc(RequireOwnership = false)]
-    public void ProcessPlayerHitServerRpc(ulong playerId)
+    public void ProcessPlayerHitWithReferenceServerRpc(NetworkObjectReference playerRef)
     {
         if (!IsServer) return;
 
-        // Tenta encontrar o objeto do jogador na rede
-        NetworkObject playerNetworkObject = NetworkManager.Singleton.SpawnManager.GetPlayerNetworkObject(playerId);
-        if (playerNetworkObject == null)
+        if (!playerRef.TryGet(out NetworkObject playerNetworkObject))
         {
-            Debug.LogWarning($"Player NetworkObject not found for ID: {playerId}");
+            Debug.LogWarning("Player NetworkObject not found from reference");
             return;
         }
 
         PlayerMovement playerMovement = playerNetworkObject.GetComponent<PlayerMovement>();
         if (playerMovement == null)
         {
-            Debug.LogWarning($"PlayerMovement component not found on player object ID: {playerId}");
+            Debug.LogWarning($"PlayerMovement component not found on player object");
             return;
         }
 
         // 1. Checa a Invulnerabilidade
         if (playerMovement.IsInvulnerable.Value)
         {
-            Debug.Log($"Player {playerId} hit but is invulnerable.");
             return;
         }
 
@@ -410,7 +446,6 @@ public class GameManager : NetworkBehaviour
         if (playerLives.Value > 0)
         {
             playerLives.Value--;
-            Debug.Log($"Player {playerId} lost a life. Remaining lives: {playerLives.Value}");
         }
 
         // 3. Solta moedas e Inicia Invulnerabilidade
@@ -418,29 +453,20 @@ public class GameManager : NetworkBehaviour
 
         if (coinSpawner != null)
         {
-            // Chama o método no PlayerMovement (que roda no servidor) e CAPTURA o valor das moedas perdidas.
+            // Usar a posição atual do jogador atingido
             coinsLost = playerMovement.ReceiveHitAndDropCoins_Server(coinSpawner);
         }
-        else
-        {
-            Debug.LogError("CoinSpawner reference is missing in GameManager! Coins cannot be dropped.");
-        }
 
-        // =======================================================
-        // DEDUÇÃO DA PONTUAÇÃO GLOBAL (GameManager.score)
-        // =======================================================
+        // 4. Dedução da pontuação global
         if (coinsLost > 0)
         {
-            // Reduz a pontuação global (depositada) pelo valor das moedas perdidas
             score.Value = Mathf.Max(0, score.Value - coinsLost);
-            Debug.Log($"Score global penalizado em {coinsLost} pontos (moedas perdidas). Novo score: {score.Value}");
         }
 
-        // 4. Checa Fim de Jogo (Opcional, adicione sua lógica de morte)
+        // 5. Checa Fim de Jogo
         if (playerLives.Value <= 0)
         {
-            EndGame(false); // Chame sua função de fim de jogo
-            Debug.Log("Game Over!");
+            EndGame(false); // Catchers venceram (runners perderam todas as vidas)
         }
     }
 
@@ -483,50 +509,72 @@ public class GameManager : NetworkBehaviour
 
     private void ResetAllPlayersPosition()
     {
-        // Encontra todos os objetos de jogador (Player) no servidor
-        GameObject[] playerObjects = GameObject.FindGameObjectsWithTag("Player");
+        // Apenas o servidor executa a lógica de distribuição de posições
+        if (!IsServer) return;
 
-        // Os guardas também precisam ser teleportados se for o caso
-        GameObject[] guardObjects = GameObject.FindGameObjectsWithTag("Guard");
+        Debug.Log("Resetando posições de todos os jogadores...");
 
-        List<GameObject> allPlayers = new List<GameObject>();
-        allPlayers.AddRange(playerObjects);
-        allPlayers.AddRange(guardObjects);
-
-        foreach (GameObject playerObject in allPlayers)
+        // 1. Resetar Runners (PlayerMovement)
+        PlayerMovement[] allRunners = FindObjectsByType<PlayerMovement>(FindObjectsSortMode.None);
+        for (int i = 0; i < allRunners.Length; i++)
         {
-            NetworkObject netObject = playerObject.GetComponent<NetworkObject>();
-            if (netObject == null) continue;
-
-            Transform spawnPoint = null;
-            PlayerType playerType = NetworkConnectionManager.Instance.GetPlayerType(netObject.OwnerClientId);
-
-            if (playerType == PlayerType.Runner)
+            if (playerSpawnPoints.Length > 0)
             {
-                // Usa o ponto de spawn 0 para resetar
-                if (playerSpawnPoints.Length > 0)
-                    spawnPoint = playerSpawnPoints[0];
+                // Usa o index para distribuir nos pontos de spawn
+                Vector3 spawnPos = playerSpawnPoints[i % playerSpawnPoints.Length].position;
+
+                // IMPORTANTE: Chama o ClientRpc para cada jogador
+                allRunners[i].TeleportPlayerClientRpc(spawnPos);
+
+                // Para garantir que a câmera seja resetada imediatamente
+                ResetCameraForPlayerClientRpc(allRunners[i].NetworkObjectId, spawnPos);
             }
-            else // Guard
+        }
+
+        // 2. Resetar Guards (Guard)
+        Guard[] allGuards = FindObjectsByType<Guard>(FindObjectsSortMode.None);
+        for (int i = 0; i < allGuards.Length; i++)
+        {
+            if (guardSpawnPoints.Length > 0)
             {
-                // Usa o ponto de spawn 0 para resetar
-                if (guardSpawnPoints.Length > 0)
-                    spawnPoint = guardSpawnPoints[0];
+                Vector3 spawnPos = guardSpawnPoints[i % guardSpawnPoints.Length].position;
+                allGuards[i].TeleportPlayerClientRpc(spawnPos);
+
+                // Para garantir que a câmera seja resetada imediatamente
+                ResetCameraForPlayerClientRpc(allGuards[i].NetworkObjectId, spawnPos);
             }
+        }
 
-            if (spawnPoint != null)
+        // Chama o reset geral de câmeras
+        ResetAllCamerasClientRpc();
+    }
+
+    [ClientRpc]
+    private void ResetCameraForPlayerClientRpc(ulong playerNetworkId, Vector3 newPosition)
+    {
+        // Encontra o objeto pelo NetworkId
+        if (NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(playerNetworkId, out NetworkObject netObj))
+        {
+            // Verifica se é o jogador local
+            if (netObj.IsOwner)
             {
-                // Usar Teleport para evitar problemas de interpolação
-                playerObject.transform.position = spawnPoint.position;
-                playerObject.transform.rotation = spawnPoint.rotation;
-
-                // Se for um jogador, resetar as moedas carregadas
-                PlayerMovement playerMovement = playerObject.GetComponent<PlayerMovement>();
-                if (playerMovement != null)
+                // Força a câmera a seguir o jogador
+                CameraFollow cameraFollow = FindFirstObjectByType<CameraFollow>();
+                if (cameraFollow != null && cameraFollow.Target == netObj.transform)
                 {
-                    playerMovement.coinsCarried.Value = 0;
+                    cameraFollow.ForcePosition();
                 }
             }
+        }
+    }
+
+    [ClientRpc]
+    private void ResetAllCamerasClientRpc()
+    {
+        SplitScreenManager splitManager = FindFirstObjectByType<SplitScreenManager>();
+        if (splitManager != null)
+        {
+            splitManager.ResetAllCameras();
         }
     }
 
@@ -543,9 +591,14 @@ public class GameManager : NetworkBehaviour
         Coin[] allCoins = FindObjectsByType<Coin>(FindObjectsSortMode.None);
         foreach (Coin coin in allCoins)
         {
-            if (coin.IsSpawned)
+            if (coin != null)
             {
-                coin.GetComponent<NetworkObject>().Despawn();
+                NetworkObject netObj = coin.GetComponent<NetworkObject>();
+                // Verifique se o objeto ainda está ativo na rede antes de desativar
+                if (netObj != null && netObj.IsSpawned)
+                {
+                    netObj.Despawn();
+                }
             }
         }
     }
@@ -556,15 +609,6 @@ public class GameManager : NetworkBehaviour
         if (_uiManager != null)
         {
             _uiManager.HideEndGamePanel();
-        }
-    }
-
-    [ClientRpc]
-    public void ShowEndGamePanelClientRpc(bool won)
-    {
-        if (_uiManager != null)
-        {
-            _uiManager.ShowEndGamePanel(won);
         }
     }
 

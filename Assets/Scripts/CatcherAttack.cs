@@ -1,8 +1,5 @@
-// CatcherAttack.cs
-
 using UnityEngine;
 using Unity.Netcode;
-
 public class CatcherAttack : MonoBehaviour
 {
     // A referÍncia ao NetworkObject do guarda/catcher que possui este ataque.
@@ -50,6 +47,7 @@ public class CatcherAttack : MonoBehaviour
         }
     }
 
+    // CatcherAttack.cs - Modificar o mÈtodo OnTriggerEnter
     void OnTriggerEnter(Collider other)
     {
         // 1. Apenas o servidor deve processar a colis„o de ataque
@@ -60,27 +58,36 @@ public class CatcherAttack : MonoBehaviour
         // 2. Verifica se colidiu com um jogador
         if (other.CompareTag("Player"))
         {
-            var playerNetworkObject = other.GetComponent<NetworkObject>();
+            var playerMovement = other.GetComponent<PlayerMovement>();
+            if (playerMovement == null) return;
 
+            var playerNetworkObject = other.GetComponent<NetworkObject>();
             if (playerNetworkObject != null)
             {
-                // 3. Garante que n„o estÅEacertando o prÛprio guarda
+                // 3. Garante que n„o est· acertando o prÛprio guarda
                 if (playerNetworkObject.OwnerClientId != ownerNetworkObject.OwnerClientId)
                 {
-                    // ObtÈm o ID do cliente do jogador atingido
-                    ulong playerHitId = playerNetworkObject.OwnerClientId;
+                    // OBTER O ID CORRETO PARA SPLITSCREEN
+                    // No splitscreen, todos os jogadores locais compartilham o mesmo OwnerClientId
+                    // Precisamos usar um mÈtodo diferente para identificar qual jogador foi atingido
 
                     _hasHit = true;
 
                     if (_gameManager != null)
                     {
-                        // 4. CHAMA O NOVO RPC DE PROCESSAMENTO DE DANO NO GAMEMANAGER
-                        // Em vez de LoseLifeServerRpc(), chamamos o novo mÈtodo centralizado
-                        _gameManager.ProcessPlayerHitServerRpc(playerHitId);
+                        // 4. Passar o NetworkObject do jogador atingido em vez do ID
+                        // Isso garante que o dano seja aplicado ao objeto correto
+                        ulong playerHitId = playerNetworkObject.NetworkObjectId;
+
+                        // Alternativa: passar o NetworkObjectReference
+                        NetworkObjectReference playerRef = new NetworkObjectReference(playerNetworkObject);
+
+                        // Chamar um novo mÈtodo que aceita NetworkObjectReference
+                        _gameManager.ProcessPlayerHitWithReferenceServerRpc(playerRef);
 
                         // 5. Desativa o dano imediatamente apÛs o hit.
                         DeactivateDamage();
-                        CancelInvoke(nameof(DeactivateDamage)); // Cancela o Invoke do timer
+                        CancelInvoke(nameof(DeactivateDamage));
                     }
                 }
             }

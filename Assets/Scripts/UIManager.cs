@@ -1,10 +1,10 @@
-﻿using UnityEngine;
+﻿using System.Collections.Generic;
 using TMPro;
-using System.Collections.Generic;
-using UnityEngine.UI;
 using Unity.Netcode;
+using UnityEngine;
 using UnityEngine.SceneManagement;
-
+using UnityEngine.UI;
+using static GameManager;
 public class UIManager : MonoBehaviour
 {
     [Header("Game HUD")]
@@ -78,7 +78,7 @@ public class UIManager : MonoBehaviour
 
         // Registrar para eventos de mudança de cena
         SceneManager.sceneLoaded += OnSceneLoaded;
-
+        lobbyPanel.SetActive(true);
         // Adicione a lógica de conexão dos botões:
         if (startMatchButton != null)
         {
@@ -90,6 +90,12 @@ public class UIManager : MonoBehaviour
         {
             disconnectButton.onClick.RemoveAllListeners();
             disconnectButton.onClick.AddListener(OnDisconnectButtonClicked);
+        }
+
+        if (NetworkConnectionManager.Instance != null)
+        {
+            NetworkConnectionManager.Instance.totalPlayers.OnValueChanged += (prev, curr) => RefreshPlayerCounter();
+            NetworkConnectionManager.Instance.totalGuards.OnValueChanged += (prev, curr) => RefreshPlayerCounter();
         }
     }
 
@@ -107,6 +113,26 @@ public class UIManager : MonoBehaviour
         }
         UpdateDashUI();
         UpdateAttackUI();
+    }
+
+    private void RefreshPlayerCounter()
+    {
+        var conn = NetworkConnectionManager.Instance;
+        if (conn != null && conn.IsSpawned)
+        {
+            int totalRunners = conn.totalPlayers.Value;
+            int totalCatchers = conn.totalGuards.Value;
+            int total = totalRunners + totalCatchers;
+
+            Debug.Log($"RefreshPlayerCounter: runners={totalRunners}, catchers={totalCatchers}, total={total}");
+
+            UpdatePlayerCounter(total, NetworkConnectionManager.MAX_TOTAL_PLAYERS);
+        }
+        else
+        {
+            Debug.Log($"RefreshPlayerCounter: ConnectionManager não disponível");
+            UpdatePlayerCounter(GameSettings.LocalPlayerCount, NetworkConnectionManager.MAX_TOTAL_PLAYERS);
+        }
     }
 
     void OnDestroy()
@@ -145,7 +171,8 @@ public class UIManager : MonoBehaviour
         }
 
         UpdateLobbyCode("---");
-        UpdatePlayerCounter(0, NetworkConnectionManager.MAX_PLAYERS + NetworkConnectionManager.MAX_GUARDS);
+
+        RefreshPlayerCounter();
     }
 
     private void DelayedUIUpdate()
@@ -207,7 +234,16 @@ public class UIManager : MonoBehaviour
     public void ShowLobbyUI(bool isHost, string lobbyCode)
     {
         _currentState = UIState.Lobby;
-        if (lobbyPanel != null) lobbyPanel.SetActive(true);
+        if (lobbyPanel != null)
+        {
+            lobbyPanel.SetActive(true);
+            Debug.Log("Lobby panel ativado");
+        }
+        else
+        {
+            Debug.LogError("lobbyPanel é nulo! Verifique a referência no Inspector");
+        }
+
         if (mainMenuPanel != null) mainMenuPanel.SetActive(false);
         if (gameHudPanel != null) gameHudPanel.SetActive(false);
 
@@ -269,7 +305,7 @@ public class UIManager : MonoBehaviour
 
         if (startMatchButton != null)
         {
-            startMatchButton.interactable = false;
+            startMatchButton.interactable = !started;
         }
         if (virtualJoystickContainer != null)
         {
@@ -359,7 +395,10 @@ public class UIManager : MonoBehaviour
     {
         if (playerCountText != null)
         {
-            playerCountText.text = $"Online: {current} / {max}";
+            playerCountText.text = $"Players: {current}/{max}";
+
+            // LOG TEMPORÁRIO PARA DEBUG
+            Debug.Log($"UpdatePlayerCounter chamado: current={current}, max={max}");
         }
 
         if (startMatchButton != null && NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost)
@@ -369,7 +408,6 @@ public class UIManager : MonoBehaviour
             if (current != _lastPlayerCount)
             {
                 _lastPlayerCount = current;
-                //Debug.Log($"Player counter updated: {current}/{max}. Host can always start match.");
             }
         }
     }
@@ -519,28 +557,72 @@ public class UIManager : MonoBehaviour
         }
     }
 
-    public void ShowEndGamePanel(bool won)
+    public void ShowEndGamePanel(EndGameResult result)
     {
-        ShowLobbyUI(false, "");
+        if (endGamePanel == null) return;
 
+        endGamePanel.SetActive(true);
+
+        // Encontrar os textos para atualizar
+        Text victoryText = endGamePanel.transform.Find("VictoryText")?.GetComponent<Text>();
+        Text messageText = endGamePanel.transform.Find("MessageText")?.GetComponent<Text>();
+        Text descriptionText = endGamePanel.transform.Find("DescriptionText")?.GetComponent<Text>();
+
+        if (victoryText != null)
+        {
+            victoryText.text = result.didLocalPlayerWin ? "VICTORY!" : "DEFEAT!";
+            victoryText.color = result.didLocalPlayerWin ? Color.green : Color.red;
+        }
+
+        if (messageText != null)
+        {
+            messageText.text = result.message;
+        }
+
+        if (descriptionText != null)
+        {
+            if (result.didLocalPlayerWin)
+            {
+                descriptionText.text = $"Congratulations! The {result.winningTeam} have won!";
+            }
+            else
+            {
+                descriptionText.text = $"Better luck next time! The {result.losingTeam} have lost!";
+            }
+        }
+
+        // Também podemos mostrar uma imagem diferente baseada no resultado
+        Image backgroundImage = endGamePanel.GetComponent<Image>();
+        if (backgroundImage != null)
+        {
+            backgroundImage.color = result.didLocalPlayerWin ?
+                new Color(0.1f, 0.5f, 0.1f, 0.8f) : // Verde escuro para vitória
+                new Color(0.5f, 0.1f, 0.1f, 0.8f);  // Vermelho escuro para derrota
+        }
+    }
+
+    public void ShowSimpleEndGame(string message)
+    {
         if (endGamePanel != null)
         {
             endGamePanel.SetActive(true);
-            TextMeshProUGUI resultText = endGamePanel.GetComponentInChildren<TextMeshProUGUI>();
-            if (resultText != null)
-            {
-                resultText.text = won ? "You Won!" : "You Lost!";
-            }
 
-            Button[] buttons = endGamePanel.GetComponentsInChildren<Button>();
-            if (buttons.Length > 1)
+            // Tenta encontrar qualquer componente de texto no painel para escrever a mensagem
+            TMPro.TextMeshProUGUI textMesh = endGamePanel.GetComponentInChildren<TMPro.TextMeshProUGUI>();
+            if (textMesh != null)
             {
-                Button restartButton = buttons[1];
-                if (restartButton != null)
+                textMesh.text = message;
+                // Opcional: Mudar a cor do texto
+                textMesh.color = message.Contains("Victory") ? Color.green : Color.red;
+            }
+            else
+            {
+                // Fallback para UI Legacy (Text comum)
+                Text legacyText = endGamePanel.GetComponentInChildren<Text>();
+                if (legacyText != null)
                 {
-                    restartButton.gameObject.SetActive(NetworkManager.Singleton.IsHost);
-                    restartButton.onClick.RemoveAllListeners();
-                    restartButton.onClick.AddListener(OnRestartGameButtonClicked);
+                    legacyText.text = message;
+                    legacyText.color = message.Contains("Victory") ? Color.green : Color.red;
                 }
             }
         }

@@ -96,10 +96,26 @@ public class VirtualJoystick : MonoBehaviour, IPointerDownHandler, IDragHandler,
         _isPlayerFound = false;
     }
 
+    private void CheckForLocalPlayer()
+    {
+        // Se a referência atual é nula, tenta achar o novo player spawnado
+        if (_localPlayerMovement == null && _localGuard == null)
+        {
+            var player = FindObjectsByType<PlayerMovement>(FindObjectsSortMode.None)
+                .FirstOrDefault(p => p.IsOwner);
+            if (player != null) _localPlayerMovement = player;
+
+            var guard = FindObjectsByType<Guard>(FindObjectsSortMode.None)
+                .FirstOrDefault(g => g.IsOwner);
+            if (guard != null) _localGuard = guard;
+        }
+    }
+
     // Chamado quando o toque/clique começa
     public void OnPointerDown(PointerEventData eventData)
     {
-        // Tenta processar o drag imediatamente para iniciar o movimento
+        // Sempre valida se ainda temos o player antes de mover
+        CheckForLocalPlayer();
         OnDrag(eventData);
     }
 

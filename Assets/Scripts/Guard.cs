@@ -1,7 +1,6 @@
 ﻿using UnityEngine;
 using Unity.Netcode;
 using System.Collections;
-
 public class Guard : NetworkBehaviour
 {
     // Public and Inspector-visible variables
@@ -32,7 +31,9 @@ public class Guard : NetworkBehaviour
     public float networkMovementSmoothness = 5f;
 
     // Network variables
+    public NetworkVariable<bool> IsCatcher = new NetworkVariable<bool>(true);
     public NetworkVariable<float> AttackCooldownRemaining = new NetworkVariable<float>(0f);
+    public NetworkVariable<int> playerNumber = new NetworkVariable<int>(0);
 
     // Variável local para o cooldown
     private float _localAttackCooldown = 0f;
@@ -52,6 +53,17 @@ public class Guard : NetworkBehaviour
     public override void OnNetworkSpawn()
     {
         base.OnNetworkSpawn();
+        // Atualiza o nome do objeto localmente para facilitar a depuração
+        // O valor será definido pelo servidor
+        playerNumber.OnValueChanged += (oldVal, newVal) => {
+            gameObject.name = (this is PlayerMovement ? "Runner_P" : "Catcher_P") + newVal;
+        };
+
+        // Se o valor já estiver definido ao spawnar (para quem entra depois)
+        if (playerNumber.Value > 0)
+        {
+            gameObject.name = (this is PlayerMovement ? "Runner_P" : "Catcher_P") + playerNumber.Value;
+        }
 
         // Initialize CharacterController and network position/rotation
         _characterController = GetComponent<CharacterController>();
@@ -65,6 +77,17 @@ public class Guard : NetworkBehaviour
         {
             _localAttackCooldown = AttackCooldownRemaining.Value;
             _attackOnCooldown = AttackCooldownRemaining.Value > 0f;
+
+            if (IsOwner)
+            {
+                // Força o setup dos botões mobile a rodar novamente para este novo objeto
+                var mobileUI = FindFirstObjectByType<MobileButtonsSetup>();
+                if (mobileUI != null) mobileUI.FindAndSetupButtons();
+
+                // Se tiver o SplitScreenManager, aproveite para dar refresh na câmera aqui também
+                var ssm = FindFirstObjectByType<SplitScreenManager>();
+                if (ssm != null) ssm.RefreshCameras();
+            }
 
             // Notifica o UIManager
             UIManager uiManager = FindFirstObjectByType<UIManager>();
@@ -157,13 +180,14 @@ public class Guard : NetworkBehaviour
                 HandleMovement();
             }
             HandleAttackInput();
-
+            /*
             // Sincroniza a posição do proprietário para o servidor em intervalos regulares
             if (Time.time > _lastPositionUpdateTime + POSITION_UPDATE_INTERVAL)
             {
                 SubmitPositionServerRpc(transform.position, transform.rotation);
                 _lastPositionUpdateTime = Time.time;
             }
+            */
         }
         else
         {
@@ -241,6 +265,45 @@ public class Guard : NetworkBehaviour
         }
     }
 
+    [ClientRpc]
+    public void TeleportPlayerClientRpc(Vector3 newPosition)
+    {
+        CharacterController cc = GetComponent<CharacterController>();
+
+        // PASSO 1: Desativar o CharacterController é OBRIGATÓRIO para teleportar no Unity
+        if (cc != null) cc.enabled = false;
+
+        // PASSO 2: Mover o transform
+        transform.position = newPosition;
+
+        // PASSO 3: Reativar o controller
+        if (cc != null) cc.enabled = true;
+
+        // PASSO 4: IMPORTANTE: Forçar a câmera a atualizar IMEDIATAMENTE
+        // Para o jogador local, precisamos atualizar a câmera associada
+        if (IsOwner)
+        {
+            // Encontra todas as câmeras que podem estar seguindo este jogador
+            CameraFollow[] cameraFollows = FindObjectsByType<CameraFollow>(FindObjectsSortMode.None);
+            foreach (CameraFollow cameraFollow in cameraFollows)
+            {
+                // Verifica se esta câmera está seguindo este jogador
+                if (cameraFollow.Target == transform)
+                {
+                    // Força a câmera a atualizar sua posição imediatamente
+                    cameraFollow.ForcePosition();
+                }
+            }
+
+            // Também verifica o SplitScreenManager
+            SplitScreenManager splitManager = FindFirstObjectByType<SplitScreenManager>();
+            if (splitManager != null)
+            {
+                splitManager.ResetCameraForPlayer(this);
+            }
+        }
+    }
+
     // =======================================================
     // SERVICOS RPC
     // =======================================================
@@ -308,7 +371,7 @@ public class Guard : NetworkBehaviour
         // RESETAR O ESTADO DO BOTÃO MÓVEL APÓS A LEITURA
         _attackPressed = false;
     }
-
+    /*
     // RPC para sincronizar a posição e rotação do guarda
     [ServerRpc(RequireOwnership = false)]
     private void SubmitPositionServerRpc(Vector3 pos, Quaternion rot)
@@ -316,7 +379,7 @@ public class Guard : NetworkBehaviour
         _networkPosition = pos;
         _networkRotation = rot;
     }
-
+    */
     void OnTriggerEnter(Collider other)
     {
         // Apenas o servidor processa a colisão
