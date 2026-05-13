@@ -8,6 +8,8 @@
 /[Oo]bj/
 /[Bb]uild/
 /[Bb]uilds/
+/BuildAndroid/
+/BuildPC/
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
 *.log
@@ -97,3 +99,5 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+Assets/_Recovery/
+Assets/_Recovery.meta

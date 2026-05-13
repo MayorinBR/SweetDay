@@ -1,79 +1,106 @@
-using UnityEngine;
 using TMPro;
 using Unity.Netcode;
+using UnityEngine;
 
+/// <summary>
+/// Displays the player's number (e.g. "P1", "P2") in a world-space text label
+/// that always faces the main camera.
+/// </summary>
 public class PlayerOverheadUI : NetworkBehaviour
 {
-    [SerializeField] private TextMeshProUGUI idText;
-    
-    // Referências aos scripts que guardam o playerNumber
+    // ====================================================================
+    // Inspector
+    // ====================================================================
+
+    [SerializeField, Tooltip("TextMeshProUGUI component that renders the player-number label. " +
+                              "Auto-detected from children if left empty.")]
+    private TextMeshProUGUI idText;
+
+    // ====================================================================
+    // Private
+    // ====================================================================
+
     private PlayerMovement _playerMovement;
     private Guard _guard;
 
+    // ====================================================================
+    // NetworkBehaviour
+    // ====================================================================
+
+    /// <inheritdoc/>
     public override void OnNetworkSpawn()
     {
+        base.OnNetworkSpawn();
+
+        // Auto-find the text component if not wired in the Inspector.
         if (idText == null)
             idText = GetComponentInChildren<TextMeshProUGUI>();
 
-        // Tenta pegar um dos dois componentes
+        // Locate the owning character script in the parent hierarchy.
         _playerMovement = GetComponentInParent<PlayerMovement>();
         _guard = GetComponentInParent<Guard>();
 
-        // Se o valor já estiver definido, atualiza agora
-        UpdateDisplay();
+        // Subscribe to future value changes so the label stays current.
+        if (_playerMovement != null)
+            _playerMovement.playerNumber.OnValueChanged += OnPlayerNumberChanged;
+        else if (_guard != null)
+            _guard.playerNumber.OnValueChanged += OnPlayerNumberChanged;
 
-        // Inscreve-se para mudanças futuras no valor (importante para rede)
-        if (_playerMovement != null) 
-            _playerMovement.playerNumber.OnValueChanged += OnIdChanged;
-        else if (_guard != null) 
-            _guard.playerNumber.OnValueChanged += OnIdChanged;
+        // Render the value that is already available at spawn time.
+        UpdateDisplay();
     }
 
-    private void OnIdChanged(int previousValue, int newValue)
+    /// <inheritdoc/>
+    public override void OnNetworkDespawn()
     {
-        UpdateDisplay();
+        base.OnNetworkDespawn();
+
+        if (_playerMovement != null)
+            _playerMovement.playerNumber.OnValueChanged -= OnPlayerNumberChanged;
+        else if (_guard != null)
+            _guard.playerNumber.OnValueChanged -= OnPlayerNumberChanged;
     }
 
+    // ====================================================================
+    // Unity Lifecycle
+    // ====================================================================
+
+    private void LateUpdate()
+    {
+        // Keep the label facing the main camera every frame (billboard effect).
+        if (Camera.main == null) return;
+
+        transform.LookAt(
+            transform.position + Camera.main.transform.rotation * Vector3.forward,
+            Camera.main.transform.rotation * Vector3.up);
+    }
+
+    // ====================================================================
+    // Private EHelpers
+    // ====================================================================
+
+    private void OnPlayerNumberChanged(int previous, int current) => UpdateDisplay();
+
+    /// <summary>
+    /// Reads the current <c>playerNumber</c> from whichever character script is present
+    /// and refreshes the label text and colour.
+    /// </summary>
     private void UpdateDisplay()
     {
         if (idText == null) return;
 
-        int finalId = 0;
+        int id = 0;
 
-        // Puxa o valor de onde estiver disponível
-        if (_playerMovement != null) finalId = _playerMovement.playerNumber.Value;
-        else if (_guard != null) finalId = _guard.playerNumber.Value;
-
-        // Se o ID ainda for 0 (não inicializado), usa o OwnerClientId como fallback
-        if (finalId == 0) finalId = (int)OwnerClientId + 1;
-
-        idText.text = $"P{finalId}";
-
-        // Cores baseadas no ID final para diferenciar P1, P2, P3...
         if (_playerMovement != null)
-        {
-            idText.color = Color.yellow;
-        }
-        else
-        {
-            idText.color = Color.red;
-        }
-    }
+            id = _playerMovement.playerNumber.Value;
+        else if (_guard != null)
+            id = _guard.playerNumber.Value;
 
-    void LateUpdate()
-    {
-        // Faz o texto olhar sempre para a câmera atual
-        if (Camera.main != null)
-        {
-            transform.LookAt(transform.position + Camera.main.transform.rotation * Vector3.forward,
-                             Camera.main.transform.rotation * Vector3.up);
-        }
-    }
+        // Fall back to OwnerClientId if the networked value hasn't arrived yet.
+        if (id == 0)
+            id = (int)OwnerClientId + 1;
 
-    public override void OnNetworkDespawn()
-    {
-        // Limpeza de eventos
-        if (_playerMovement != null) _playerMovement.playerNumber.OnValueChanged -= OnIdChanged;
-        if (_guard != null) _guard.playerNumber.OnValueChanged -= OnIdChanged;
+        idText.text = $"P{id}";
+        idText.color = _playerMovement != null ? Color.yellow : Color.red;
     }
 }
