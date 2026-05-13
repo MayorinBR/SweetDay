@@ -1,37 +1,68 @@
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
-using TMPro;
 
+/// <summary>
+/// Holds references to all main-menu UI controls and wires their callbacks to
+/// <see cref="MenuManager"/> whenever the component is enabled or the scene reloads.
+/// </summary>
 public class MenuButtonHolder : MonoBehaviour
 {
-    [Header("ReferÍncias de Botıes")]
+    // ====================================================================
+    // Inspector
+    // ====================================================================
+
+    [Header("Button References")]
+    /// <summary>Button that starts a hosted session.</summary>
     public Button hostButton;
+
+    /// <summary>Button that joins an existing session by code.</summary>
     public Button joinButton;
+
+    /// <summary>Button that quits the application.</summary>
     public Button quitButton;
+
+    [Header("Dropdown References")]
+    /// <summary>Dropdown for selecting the game scene (map).</summary>
     public TMP_Dropdown sceneDropdown;
+
+    /// <summary>Dropdown for selecting Runner or Catcher role.</summary>
     public TMP_Dropdown playerTypeDropdown;
+
+    [Header("Input References")]
+    /// <summary>Input field where the player types the lobby join code.</summary>
     public TMP_InputField joinCodeInput;
 
-    void Start()
-    {
-        ReconnectButtons();
-    }
+    /// <summary>Dropdown for choosing how many local players share this machine.</summary>
+    public TMP_Dropdown localPlayersDropdown;
 
-    void OnEnable()
-    {
-        // Reconectar sempre que ativar (apÛs carregar cena)
-        ReconnectButtons();
-    }
+    // ====================================================================
+    // Unity Lifecycle
+    // ====================================================================
 
+    private void Start() => ReconnectButtons();
+    private void OnEnable() => ReconnectButtons();
+
+    // ====================================================================
+    // Public API
+    // ====================================================================
+
+    /// <summary>
+    /// Re-wires all button and dropdown listeners to the current
+    /// <see cref="MenuManager.Instance"/>.  Safe to call multiple times.
+    /// </summary>
     public void ReconnectButtons()
     {
-        Debug.Log("Reconectando botıes...");
-
-        // Atualizar referÍncias no MenuManager
         if (MenuManager.Instance != null)
         {
-            MenuManager.Instance.mainMenuPanel = transform.parent?.gameObject;
+            // Update the MenuManager's platform-panel reference.
+#if UNITY_ANDROID || UNITY_IOS
+            MenuManager.Instance.mobilePanel = transform.parent?.gameObject;
+#else
+            MenuManager.Instance.pcPanel = transform.parent?.gameObject;
+#endif
 
+            // Scene dropdown.
             if (sceneDropdown != null)
             {
                 MenuManager.Instance.sceneDropdown = sceneDropdown;
@@ -39,6 +70,7 @@ public class MenuButtonHolder : MonoBehaviour
                 sceneDropdown.onValueChanged.AddListener(MenuManager.Instance.OnSceneSelected);
             }
 
+            // Player-type dropdown.
             if (playerTypeDropdown != null)
             {
                 MenuManager.Instance.playerTypeDropdown = playerTypeDropdown;
@@ -46,136 +78,101 @@ public class MenuButtonHolder : MonoBehaviour
                 playerTypeDropdown.onValueChanged.AddListener(MenuManager.Instance.OnPlayerTypeSelected);
             }
 
+            // Join-code input.
             if (joinCodeInput != null)
-            {
                 MenuManager.Instance.joinCodeInput = joinCodeInput;
+
+            // Local-players dropdown.
+            if (localPlayersDropdown != null)
+            {
+                localPlayersDropdown.onValueChanged.RemoveAllListeners();
+                localPlayersDropdown.onValueChanged.AddListener(MenuManager.Instance.OnLocalPlayerCountSelected);
             }
         }
 
-        // Configurar botıes
+        // Host button.
         if (hostButton != null)
         {
             hostButton.onClick.RemoveAllListeners();
             hostButton.onClick.AddListener(OnHostButtonClicked);
-            Debug.Log("Bot„o Host reconectado");
         }
 
+        // Join button.
         if (joinButton != null)
         {
             joinButton.onClick.RemoveAllListeners();
             joinButton.onClick.AddListener(OnJoinButtonClicked);
-            Debug.Log("Bot„o Join reconectado");
         }
 
+        // Quit button.
         if (quitButton != null)
         {
             quitButton.onClick.RemoveAllListeners();
             quitButton.onClick.AddListener(OnQuitButtonClicked);
-            Debug.Log("Bot„o Quit reconectado");
         }
     }
 
-    private void OnHostButtonClicked()
-    {
-        Debug.Log("Host button clicked");
-        if (MenuManager.Instance != null)
-        {
-            MenuManager.Instance.StartHost();
-        }
-        else
-        {
-            Debug.LogError("MenuManager.Instance is null!");
-            // Tentar encontrar o MenuManager
-            MenuManager manager = FindFirstObjectByType<MenuManager>();
-            if (manager != null)
-            {
-                manager.StartHost();
-            }
-        }
-    }
-
-    private void OnJoinButtonClicked()
-    {
-        Debug.Log("Join button clicked");
-        if (MenuManager.Instance != null)
-        {
-            MenuManager.Instance.JoinGame();
-        }
-    }
-
-    private void OnQuitButtonClicked()
-    {
-        Debug.Log("Quit button clicked");
-        if (MenuManager.Instance != null)
-        {
-            MenuManager.Instance.QuitGame();
-        }
-    }
-
-    // MÈtodo para encontrar botıes automaticamente
+    /// <summary>
+    /// Scans child GameObjects for buttons, dropdowns, and input fields by name,
+    /// then calls <see cref="ReconnectButtons"/> to wire them up.
+    /// Useful when the hierarchy is built dynamically.
+    /// </summary>
     public void FindButtonsAutomatically()
     {
-        Button[] buttons = GetComponentsInChildren<Button>(true);
-
-        foreach (Button button in buttons)
+        foreach (var btn in GetComponentsInChildren<Button>(includeInactive: true))
         {
-            string buttonName = button.name.ToLower();
-
-            if (buttonName.Contains("host") || buttonName.Contains("criar"))
-            {
-                hostButton = button;
-                Debug.Log($"Bot„o Host encontrado: {button.name}");
-            }
-            else if (buttonName.Contains("join") || buttonName.Contains("entrar"))
-            {
-                joinButton = button;
-                Debug.Log($"Bot„o Join encontrado: {button.name}");
-            }
-            else if (buttonName.Contains("quit") || buttonName.Contains("sair"))
-            {
-                quitButton = button;
-                Debug.Log($"Bot„o Quit encontrado: {button.name}");
-            }
+            string n = btn.name.ToLower();
+            if (n.Contains("host") || n.Contains("criar")) hostButton = btn;
+            else if (n.Contains("join") || n.Contains("entrar")) joinButton = btn;
+            else if (n.Contains("quit") || n.Contains("sair")) quitButton = btn;
         }
 
-        // Encontrar dropdowns
-        TMP_Dropdown[] dropdowns = GetComponentsInChildren<TMP_Dropdown>(true);
-        foreach (TMP_Dropdown dropdown in dropdowns)
+        foreach (var dd in GetComponentsInChildren<TMP_Dropdown>(includeInactive: true))
         {
-            string dropdownName = dropdown.name.ToLower();
-
-            if (dropdownName.Contains("scene") || dropdownName.Contains("cena"))
-            {
-                sceneDropdown = dropdown;
-                Debug.Log($"Dropdown de cena encontrado: {dropdown.name}");
-            }
-            else if (dropdownName.Contains("player") || dropdownName.Contains("tipo"))
-            {
-                playerTypeDropdown = dropdown;
-                Debug.Log($"Dropdown de tipo encontrado: {dropdown.name}");
-            }
+            string n = dd.name.ToLower();
+            if (n.Contains("scene") || n.Contains("cena")) sceneDropdown = dd;
+            else if (n.Contains("player") || n.Contains("tipo")) playerTypeDropdown = dd;
         }
 
-        // Encontrar input field
-        TMP_InputField input = GetComponentInChildren<TMP_InputField>(true);
-        if (input != null)
-        {
-            joinCodeInput = input;
-            Debug.Log($"Input field encontrado: {input.name}");
-        }
+        var input = GetComponentInChildren<TMP_InputField>(includeInactive: true);
+        if (input != null) joinCodeInput = input;
 
-        // Reconectar apÛs encontrar
         ReconnectButtons();
     }
 
-    // MÈtodo p˙blico para reconectar de outros scripts
+    /// <summary>
+    /// Static convenience method: finds the first <see cref="MenuButtonHolder"/> in the
+    /// scene, auto-discovers its controls, and reconnects all listeners.
+    /// Intended to be called after a scene load by <see cref="NetworkConnectionManager"/>.
+    /// </summary>
     public static void ReconnectAllButtonsInScene()
     {
-        MenuButtonHolder holder = FindFirstObjectByType<MenuButtonHolder>();
+        var holder = FindAnyObjectByType<MenuButtonHolder>();
         if (holder != null)
         {
             holder.FindButtonsAutomatically();
             holder.ReconnectButtons();
         }
     }
+
+    // ====================================================================
+    // Private ÅEButton Callbacks
+    // ====================================================================
+
+    private void OnHostButtonClicked()
+    {
+        if (MenuManager.Instance != null)
+            MenuManager.Instance.StartHost();
+        else
+        {
+            Debug.LogError("[MenuButtonHolder] MenuManager.Instance is null ÅEcannot start host.");
+            FindAnyObjectByType<MenuManager>()?.StartHost();
+        }
+    }
+
+    private void OnJoinButtonClicked()
+        => MenuManager.Instance?.JoinGame();
+
+    private void OnQuitButtonClicked()
+        => MenuManager.Instance?.QuitGame();
 }

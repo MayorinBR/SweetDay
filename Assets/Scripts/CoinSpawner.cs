@@ -1,198 +1,202 @@
-﻿using UnityEngine;
+﻿using System.Collections.Generic;
 using Unity.Netcode;
-using System.Collections.Generic;
+using UnityEngine;
 
+/// <summary>
+/// Server-authoritative spawner for collectible coins.
+/// Handles the initial map scatter, targeted area spawns, and
+/// dropped-coin re-spawns after a player is hit.
+/// </summary>
 public class CoinSpawner : NetworkBehaviour
 {
+    // ====================================================================
+    // Inspector
+    // ====================================================================
+
+    /// <summary>Prefab for the coin object. Must have a <see cref="NetworkObject"/> component.</summary>
     public GameObject coinPrefab;
 
     [Header("Initial Map Spawn Settings")]
+    /// <summary>Number of coins placed when the game starts.</summary>
     public int numberOfCoinsToSpawn = 20;
-    public Vector3 spawnAreaSize = new Vector3(40, 0, 40);
+
+    /// <summary>Full extents of the rectangular area in which coins are randomly scattered.</summary>
+    public Vector3 spawnAreaSize = new Vector3(40f, 0f, 40f);
 
     [Header("Collision and Layers")]
+    /// <summary>Static obstacles that coins must not overlap at spawn time.</summary>
     public LayerMask obstacleLayer;
+
+    /// <summary>Player objects that coins must not overlap at spawn time.</summary>
     public LayerMask playerLayer;
+
+    /// <summary>Guard objects that coins must not overlap at spawn time.</summary>
     public LayerMask guardLayer;
+
+    /// <summary>Floor surfaces used for height-snapping raycasts.</summary>
     public LayerMask floorLayer;
+
+    /// <summary>Radius of the overlap sphere used for coin-placement collision checks.</summary>
     public float coinOverlapRadius = 0.5f;
 
+    /// <summary>Euler rotation applied to every spawned coin instance.</summary>
     public Vector3 spawnRotationEuler = new Vector3(0f, 0f, 90f);
 
-    private LayerMask combinedAvoidanceLayers;
+    // ====================================================================
+    // Private
+    // ====================================================================
 
-    private bool hasSpawnedInitialCoins = false;
+    private LayerMask _avoidanceMask;
+    private bool _hasSpawnedInitialCoins;
 
+    // ====================================================================
+    // NetworkBehaviour
+    // ====================================================================
+
+    /// <inheritdoc/>
     public override void OnNetworkSpawn()
     {
         base.OnNetworkSpawn();
-        combinedAvoidanceLayers = obstacleLayer | playerLayer | guardLayer;
-
-        // O GameManager agora é responsável por chamar SpawnCoins()
+        _avoidanceMask = obstacleLayer | playerLayer | guardLayer;
     }
 
-    // Método para spawn inicial no mapa
+    // ====================================================================
+    // Public API
+    // ====================================================================
+
+    /// <summary>
+    /// Scatters <see cref="numberOfCoinsToSpawn"/> coins randomly across the play area.
+    /// Guarded by a one-shot flag; call <see cref="ResetSpawner"/> to allow re-spawning
+    /// (e.g. after a game reset).  Server-only.
+    /// </summary>
     public void SpawnCoins()
     {
         if (!IsServer) return;
 
-        if (hasSpawnedInitialCoins)
+        if (_hasSpawnedInitialCoins)
         {
-            Debug.LogWarning("Initial coins already spawned, skipping");
+            Debug.LogWarning("[CoinSpawner] Initial coins already spawned – skipping.");
             return;
         }
 
-        //Debug.Log($"Spawning {numberOfCoinsToSpawn} coins");
-        hasSpawnedInitialCoins = true;
+        _hasSpawnedInitialCoins = true;
 
         for (int i = 0; i < numberOfCoinsToSpawn; i++)
         {
-            Vector3 spawnPosition = Vector3.zero;
-            bool positionFound = false;
-            int maxAttempts = 10; // Reduzir tentativas para performance
-            int attempts = 0;
-
-            while (!positionFound && attempts < maxAttempts)
-            {
-                attempts++;
-
-                // Calcula uma posição aleatória dentro da área de spawn
-                float x = transform.position.x + Random.Range(-spawnAreaSize.x / 2, spawnAreaSize.x / 2);
-                float z = transform.position.z + Random.Range(-spawnAreaSize.z / 2, spawnAreaSize.z / 2);
-
-                // Encontra a altura do chão
-                Ray ray = new Ray(new Vector3(x, transform.position.y + 10f, z), Vector3.down);
-                RaycastHit hit;
-
-                if (Physics.Raycast(ray, out hit, 20f, floorLayer))
-                {
-                    spawnPosition = hit.point + Vector3.up * 0.5f; // Elevar um pouco
-
-                    // Verificação simplificada de colisão
-                    Collider[] colliders = Physics.OverlapSphere(spawnPosition, coinOverlapRadius, combinedAvoidanceLayers);
-                    if (colliders.Length == 0)
-                    {
-                        positionFound = true;
-                    }
-                }
-            }
-
-            if (positionFound)
-            {
-                Quaternion spawnRotation = Quaternion.Euler(spawnRotationEuler);
-                GameObject coinInstance = Instantiate(coinPrefab, spawnPosition, spawnRotation);
-                NetworkObject netObject = coinInstance.GetComponent<NetworkObject>();
-                if (netObject != null)
-                {
-                    netObject.Spawn();
-                    //Debug.Log($"Coin {i} spawned at {spawnPosition}");
-                }
-            }
+            if (TryFindSpawnPosition(out Vector3 pos))
+                SpawnCoin(pos);
             else
-            {
-                Debug.LogWarning($"Failed to find valid position for coin {i}");
-            }
+                Debug.LogWarning($"[CoinSpawner] Could not find a valid position for coin {i}.");
         }
     }
 
-    public void ResetSpawner()
-    {
-        hasSpawnedInitialCoins = false;
-    }
+    /// <summary>
+    /// Clears the one-shot flag so <see cref="SpawnCoins"/> can be called again.
+    /// </summary>
+    public void ResetSpawner() => _hasSpawnedInitialCoins = false;
 
-    // Método para spawn de moedas em posição específica
+    /// <summary>
+    /// Spawns <paramref name="count"/> coins in a circle of radius <paramref name="radius"/>
+    /// centred on <paramref name="centerPosition"/>.  Server-only.
+    /// </summary>
     public void SpawnCoinsAtPosition(Vector3 centerPosition, int count, float radius)
     {
         if (!IsServer) return;
 
         for (int i = 0; i < count; i++)
         {
-            // Calcula uma posição aleatória dentro do raio
-            Vector2 randomCircle = Random.insideUnitCircle * radius;
-            Vector3 spawnPosition = centerPosition + new Vector3(randomCircle.x, 0.5f, randomCircle.y);
-
-            // Simplesmente instanciamos, mas você pode adicionar mais verificação de colisão aqui
-            Quaternion spawnRotation = Quaternion.Euler(spawnRotationEuler);
-            GameObject coinInstance = Instantiate(coinPrefab, spawnPosition, spawnRotation);
-            NetworkObject netObject = coinInstance.GetComponent<NetworkObject>();
-            netObject.Spawn();
+            Vector2 rand = Random.insideUnitCircle * radius;
+            SpawnCoin(centerPosition + new Vector3(rand.x, 0.5f, rand.y));
         }
     }
 
+    /// <summary>
+    /// Spawns <paramref name="count"/> coins near <paramref name="dropPosition"/> after a
+    /// player drops their carried coins.  Each coin is height-snapped to the floor layer.
+    /// Server-only.
+    /// </summary>
     public void SpawnDroppedCoins_Server(Vector3 dropPosition, int count, float radius)
     {
         if (!IsServer) return;
 
         for (int i = 0; i < count; i++)
         {
-            // Lógica para spawnar as moedas em um raio (dropDistance do PlayerMovement)
-            Vector3 randomOffset = Random.insideUnitSphere * radius;
-            randomOffset.y = 0; // Garante que o spawn é no plano horizontal
-            Vector3 spawnPosition = dropPosition + randomOffset;
+            Vector3 offset = Random.insideUnitSphere * radius;
+            offset.y = 0f;
+            Vector3 pos = dropPosition + offset;
 
-            // Tenta encontrar o chão (FloorLayer) para posicionar a moeda corretamente no Y
-            // As Layers devem ser configuradas corretamente no Inspector
-            if (Physics.Raycast(spawnPosition + Vector3.up * 5f, Vector3.down, out RaycastHit hit, 10f, floorLayer))
-            {
-                spawnPosition.y = hit.point.y + 0.5f; // Ajusta para a altura do chão + um pequeno offset
-            }
+            if (Physics.Raycast(pos + Vector3.up * 5f, Vector3.down, out RaycastHit hit, 10f, floorLayer))
+                pos.y = hit.point.y + 0.5f;
 
-            // Instancia a moeda
-            GameObject coinGO = Instantiate(coinPrefab, spawnPosition, Quaternion.Euler(spawnRotationEuler));
-            // Spawna a moeda na rede (todos veem)
-            coinGO.GetComponent<NetworkObject>().Spawn();
+            SpawnCoin(pos);
         }
     }
 
-    [ServerRpc(RequireOwnership = false)]
+    /// <summary>
+    /// Spawns a single coin at <paramref name="position"/> from a client-initiated request.
+    /// The <paramref name="rotation"/> parameter is accepted for API compatibility but
+    /// the spawner always applies <see cref="spawnRotationEuler"/>.
+    /// </summary>
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
     public void SpawnSingleCoinServerRpc(Vector3 position, Quaternion rotation)
+        => SpawnCoin(position);
+
+    // ====================================================================
+    // Private Helpers
+    // ====================================================================
+
+    /// <summary>Instantiates and network-spawns a coin at <paramref name="position"/>.</summary>
+    private void SpawnCoin(Vector3 position)
     {
-        if (!IsServer) return;
-
-        // 生成設定を適用
-        Quaternion desiredSpawnRotation = Quaternion.Euler(spawnRotationEuler);
-
-        GameObject newCoin = Instantiate(coinPrefab, position, desiredSpawnRotation);
-        newCoin.GetComponent<NetworkObject>().Spawn();
+        GameObject coin = Instantiate(coinPrefab, position, Quaternion.Euler(spawnRotationEuler));
+        coin.GetComponent<NetworkObject>()?.Spawn();
     }
 
     /// <summary>
-    /// Desenha a área de spawn de moedas no Unity Editor para visualização.
+    /// Attempts up to 10 raycasts to find a floor position that does not overlap
+    /// any obstacle, player, or guard.
     /// </summary>
+    private bool TryFindSpawnPosition(out Vector3 result)
+    {
+        const int maxAttempts = 10;
+
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            float x = transform.position.x + Random.Range(-spawnAreaSize.x * 0.5f, spawnAreaSize.x * 0.5f);
+            float z = transform.position.z + Random.Range(-spawnAreaSize.z * 0.5f, spawnAreaSize.z * 0.5f);
+
+            var ray = new Ray(new Vector3(x, transform.position.y + 10f, z), Vector3.down);
+
+            if (Physics.Raycast(ray, out RaycastHit hit, 20f, floorLayer))
+            {
+                Vector3 candidate = hit.point + Vector3.up * 0.5f;
+
+                if (Physics.OverlapSphere(candidate, coinOverlapRadius, _avoidanceMask).Length == 0)
+                {
+                    result = candidate;
+                    return true;
+                }
+            }
+        }
+
+        result = Vector3.zero;
+        return false;
+    }
+
+    // ====================================================================
+    // Editor Gizmos
+    // ====================================================================
+
     private void OnDrawGizmos()
     {
-        // 1. Desenha a área de spawn inicial (retangular)
-
-        // Define a cor para o Gizmo da área de spawn inicial
-        Gizmos.color = new Color(0f, 1f, 0f, 0.5f); // Verde semi-transparente
-
-        // Cria a matriz de transformação para o desenho.
-        // Isso garante que a área seja desenhada no centro do CoinSpawner e com sua rotação.
-        Matrix4x4 rotationMatrix = Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one);
-        Gizmos.matrix = rotationMatrix;
-
-        // Desenha um cubo (Box) que representa a área de spawn.
-        // O tamanho do cubo é definido pela variável 'spawnAreaSize'.
-        // Usamos Vector3.up * 0.5f para elevar o gizmo do centro do objeto, tornando a visualização mais limpa.
+        // Green wire box – spawn area.
+        Gizmos.color = new Color(0f, 1f, 0f, 0.5f);
+        Gizmos.matrix = Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one);
         Gizmos.DrawWireCube(Vector3.up * 0.5f, spawnAreaSize);
 
-        // 2. Desenha a área de spawn dos botões (circular)
-
-        // O spawn dos botões é um raio em torno de uma posição, mas como o CoinSpawner não armazena
-        // a posição dos botões, vamos desenhar um indicador no centro do CoinSpawner para 
-        // lembrar que há outro tipo de spawn.
-
-        // Limpa a matriz de transformação para desenhar o próximo gizmo no espaço mundial.
+        // Orange wire sphere – per-coin overlap radius.
         Gizmos.matrix = Matrix4x4.identity;
-
-        // Define a cor para o Gizmo do raio de colisão/evitação
-        Gizmos.color = new Color(1f, 0.5f, 0f, 0.7f); // Laranja para evitar moedas
-
-        // Desenha o raio de 'coinOverlapRadius' para mostrar a área que cada moeda ocupa e evita.
-        // Desenhamos na posição do spawner (pode ser ajustado para um local mais útil se for o caso).
-        // Nota: O raio de spawn do botão ('coinSpawnRadius') está no 'ButtonSpawner.cs', 
-        // mas não temos a referência dele aqui, então esta parte é apenas um lembrete.
+        Gizmos.color = new Color(1f, 0.5f, 0f, 0.7f);
         Gizmos.DrawWireSphere(transform.position + Vector3.up * 0.5f, coinOverlapRadius);
-
     }
 }

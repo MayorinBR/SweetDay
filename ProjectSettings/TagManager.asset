@@ -13,15 +13,15 @@ TagManager:
   - 
   - Water
   - UI
-  - 
+  - PlayerCamera
   - 
   - Obstacle
   - 
   - Coin
   - Floor
-  - Water
   - 
-  - 
+  - Catcher
+  - Runner
   - 
   - 
   - 
@@ -40,8 +40,14 @@ TagManager:
   - 
   - 
   m_SortingLayers:
+  - name: Background
+    uniqueID: 3387456671
+    locked: 0
   - name: Default
     uniqueID: 0
+    locked: 0
+  - name: UI
+    uniqueID: 3259390637
     locked: 0
   m_RenderingLayers:
   - Default

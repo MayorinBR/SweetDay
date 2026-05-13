@@ -9,11 +9,10 @@ EditorBuildSettings:
     path: Assets/Scenes/MenuScene.unity
     guid: a818344ab263dbe4f9d45cde44e4ed0d
   - enabled: 1
-    path: Assets/Scenes/TestScene.unity
+    path: Assets/Scenes/TestScene_Flat.unity
     guid: 99c9720ab356a0642a771bea13969a05
   - enabled: 1
-    path: Assets/Scenes/BeachScene.unity
-    guid: ae6e0cbdf529b444a889c3717d1d6a82
+    path: Assets/Scenes/TestScene_Hill.unity
+    guid: 028534a7d1ec2f543ac2fcadf5642c11
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 4d172a25ec694344991cbbe5d3f05aa9, type: 3}
-  m_UseUCBPForAssetBundles: 0

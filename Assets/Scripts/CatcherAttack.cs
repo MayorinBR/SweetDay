@@ -1,89 +1,109 @@
-// CatcherAttack.cs
-
+Ôªøusing Unity.Netcode;
 using UnityEngine;
-using Unity.Netcode;
 
+/// <summary>
+/// Hitbox component attached to the Guard's weapon object.
+/// When enabled it activates the collider for <see cref="activeTime"/> seconds,
+/// detects the first <c>"Player"</c>-tagged object it touches, and asks the server
+/// to process the hit via <see cref="GameManager.ProcessPlayerHitWithReferenceServerRpc"/>.
+/// </summary>
 public class CatcherAttack : MonoBehaviour
 {
-    // A referÍncia ao NetworkObject do guarda/catcher que possui este ataque.
-    // Usamos NetworkObject para garantir que apenas o Guarda "propriet·rio" cause dano.
-    [HideInInspector] public NetworkObject ownerNetworkObject;
-    private bool _hasHit = false; // Flag para garantir que o ataque sÅEcause dano uma vez
+    // ====================================================================
+    // Public Fields
+    // ====================================================================
 
-    // Tempo que o hitbox deve ficar ativo (geralmente muito r·pido)
+    /// <summary>
+    /// Reference to the <see cref="NetworkObject"/> that owns this hitbox (the Guard).
+    /// Populated by <see cref="Guard.OnNetworkSpawn"/> immediately after instantiation.
+    /// </summary>
+    [HideInInspector]
+    public NetworkObject ownerNetworkObject;
+
+    /// <summary>
+    /// How long the hitbox collider remains active after the script is enabled.
+    /// Should be kept short (‚â§ <see cref="Guard.swingDuration"/>) to match the animation.
+    /// </summary>
     public float activeTime = 0.2f;
 
-    // ReferÍncia ao GameManager
+    // ====================================================================
+    // Private
+    // ====================================================================
+
+    /// <summary>Prevents the same swing from registering more than one hit.</summary>
+    private bool _hasHit;
+
     private GameManager _gameManager;
     private Collider _collider;
 
-    void Start()
+    // ====================================================================
+    // Unity Lifecycle
+    // ====================================================================
+
+    private void Awake()
     {
-        // Encontra o GameManager
-        _gameManager = FindFirstObjectByType<GameManager>();
+        _collider = GetComponent<Collider>();
+        if (_collider == null)
+            Debug.LogError("[CatcherAttack] No Collider found on hitbox GameObject.");
     }
 
-    void OnEnable()
+    private void Start()
     {
-        //Ativa o Collider quando o script ÅEativado
+        _gameManager = FindAnyObjectByType<GameManager>();
+    }
+
+    private void OnEnable()
+    {
+        _hasHit = false;
+
         if (_collider != null) _collider.enabled = true;
 
-        // Reinicia o estado ao ativar
-        _hasHit = false;
-        // Inicia o contador para desativar o dano apÛs 'activeTime'
-        Invoke(nameof(DeactivateDamage), activeTime); // Renomeamos Deactivate para DeactivateDamage
+        // Auto-deactivate after activeTime so the hitbox never stays open accidentally.
+        CancelInvoke(nameof(DeactivateDamage));
+        Invoke(nameof(DeactivateDamage), activeTime);
     }
 
+    // ====================================================================
+    // Private ‚Äì Deactivation
+    // ====================================================================
+
+    /// <summary>
+    /// Disables the collider and the script itself, ending the active damage window.
+    /// </summary>
     private void DeactivateDamage()
     {
         if (_collider != null) _collider.enabled = false;
-        enabled = false; // Desativa o prÛprio script, parando o OnTriggerEnter
+        enabled = false;
     }
 
-    void Awake()
-    {
-        // Pega a referÍncia do collider
-        _collider = GetComponent<Collider>();
-        if (_collider == null)
-        {
-            Debug.LogError("Collider not found on CatcherAttack Hitbox!");
-        }
-    }
+    // ====================================================================
+    // Collision Detection
+    // ====================================================================
 
-    void OnTriggerEnter(Collider other)
+    private void OnTriggerEnter(Collider other)
     {
-        // 1. Apenas o servidor deve processar a colis„o de ataque
-        if (!_gameManager.IsServer) return;
-
+        // Only the server processes hit logic to maintain authority.
+        if (_gameManager == null || !_gameManager.IsServer) return;
         if (ownerNetworkObject == null || _hasHit) return;
+        if (!other.CompareTag("Player")) return;
 
-        // 2. Verifica se colidiu com um jogador
-        if (other.CompareTag("Player"))
-        {
-            var playerNetworkObject = other.GetComponent<NetworkObject>();
+        var playerMovement = other.GetComponent<PlayerMovement>();
+        if (playerMovement == null) return;
 
-            if (playerNetworkObject != null)
-            {
-                // 3. Garante que n„o estÅEacertando o prÛprio guarda
-                if (playerNetworkObject.OwnerClientId != ownerNetworkObject.OwnerClientId)
-                {
-                    // ObtÈm o ID do cliente do jogador atingido
-                    ulong playerHitId = playerNetworkObject.OwnerClientId;
+        var playerNetObj = other.GetComponent<NetworkObject>();
+        if (playerNetObj == null) return;
 
-                    _hasHit = true;
+        // Prevent the guard from hitting itself (important for split-screen where
+        // multiple local players share the same OwnerClientId).
+        if (playerNetObj.NetworkObjectId == ownerNetworkObject.NetworkObjectId) return;
 
-                    if (_gameManager != null)
-                    {
-                        // 4. CHAMA O NOVO RPC DE PROCESSAMENTO DE DANO NO GAMEMANAGER
-                        // Em vez de LoseLifeServerRpc(), chamamos o novo mÈtodo centralizado
-                        _gameManager.ProcessPlayerHitServerRpc(playerHitId);
+        _hasHit = true;
 
-                        // 5. Desativa o dano imediatamente apÛs o hit.
-                        DeactivateDamage();
-                        CancelInvoke(nameof(DeactivateDamage)); // Cancela o Invoke do timer
-                    }
-                }
-            }
-        }
+        _gameManager.ProcessPlayerHitWithReferenceServerRpc(
+            new NetworkObjectReference(playerNetObj));
+
+        // Close the damage window immediately after the first confirmed hit.
+        DeactivateDamage();
+        CancelInvoke(nameof(DeactivateDamage));
     }
 }

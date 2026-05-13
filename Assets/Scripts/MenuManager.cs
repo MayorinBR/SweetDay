@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -7,71 +7,105 @@ using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+
+/// <summary>
+/// Central controller for the main-menu UI and network session entry points.
+/// </summary>
 public class MenuManager : MonoBehaviour
 {
+    // ====================================================================
+    // Singleton
+    // ====================================================================
+
+    /// <summary>Gets the singleton instance of <see cref="MenuManager"/>.</summary>
     public static MenuManager Instance { get; private set; }
 
+    // ====================================================================
+    // Inspector
+    // ====================================================================
+
     [Header("UI Elements")]
-    public GameObject mainMenuPanel;
+    /// <summary>Root panel shown on PC / Editor builds.</summary>
+    public GameObject pcPanel;
+
+    /// <summary>Root panel shown on Android / iOS builds.</summary>
+    public GameObject mobilePanel;
 
     [Header("Menu Options")]
+    /// <summary>Dropdown for choosing the game scene (map) to load.</summary>
     public TMP_Dropdown sceneDropdown;
+
+    /// <summary>Dropdown for choosing Runner (index 0) or Catcher (index 1) role.</summary>
     public TMP_Dropdown playerTypeDropdown;
 
+    /// <summary>Dropdown for setting how many players share this machine (1–4).</summary>
+    public TMP_Dropdown localPlayersDropdown;
+
     [Header("Join Game")]
+    /// <summary>Input field where the player types the 6-character lobby code.</summary>
     public TMP_InputField joinCodeInput;
 
+    // ====================================================================
+    // Private
+    // ====================================================================
+
     private NetworkConnectionManager _connectionManager;
-    private string _selectedScene = "TestScene";
+    private string _selectedScene = "TestScene_Flat";
+
+    // ====================================================================
+    // Unity Lifecycle
+    // ====================================================================
 
     void Awake()
     {
-        // GARANTIR QUE APENAS UMA INST�NCIA EXISTE
+        // Ensure only one instance exists across scene loads.
         if (Instance != null && Instance != this)
         {
-            Debug.Log($"Destruindo MenuManager duplicado: {gameObject.name}");
             Destroy(gameObject);
             return;
         }
 
         Instance = this;
-        DontDestroyOnLoad(gameObject); // IMPEDIR QUE SEJA DESTRU�DO AO TROCAR DE CENA
-
-        Debug.Log($"MenuManager inicializado e persistente: {gameObject.name}");
+        DontDestroyOnLoad(gameObject);
     }
 
     void Start()
     {
-        // Garantir que a inst�ncia est� correta
-        if (Instance == null)
-        {
-            Instance = this;
-            DontDestroyOnLoad(gameObject);
-        }
-
         _connectionManager = NetworkConnectionManager.Instance;
 
-        // Configurar dropdowns
+        // Create a NetworkConnectionManager if one does not already exist.
+        if (_connectionManager == null)
+        {
+            GameObject connectionManagerObj = new GameObject("NetworkConnectionManager");
+            _connectionManager = connectionManagerObj.AddComponent<NetworkConnectionManager>();
+            DontDestroyOnLoad(connectionManagerObj);
+        }
+
+        // ── Scene dropdown ───────────────────────────────────────────────
         if (sceneDropdown != null)
         {
             sceneDropdown.options.Clear();
-            sceneDropdown.options.Add(new TMP_Dropdown.OptionData("TestScene"));
-            sceneDropdown.options.Add(new TMP_Dropdown.OptionData("BeachScene"));
+            sceneDropdown.options.Add(new TMP_Dropdown.OptionData("TestScene_Flat"));
+            sceneDropdown.options.Add(new TMP_Dropdown.OptionData("TestScene_Hill"));
 
             if (sceneDropdown.options.Count > 0)
-            {
                 _selectedScene = sceneDropdown.options[sceneDropdown.value].text;
-            }
 
             sceneDropdown.onValueChanged.AddListener(OnSceneSelected);
         }
 
+        // ── Player-type dropdown ─────────────────────────────────────────
         if (playerTypeDropdown != null)
         {
             playerTypeDropdown.onValueChanged.AddListener(OnPlayerTypeSelected);
             OnPlayerTypeSelected(playerTypeDropdown.value);
         }
+        else
+        {
+            Debug.LogWarning("MenuManager: playerTypeDropdown was not assigned in the Inspector!");
+        }
 
+        // ── Join-code input ──────────────────────────────────────────────
         if (joinCodeInput != null)
         {
             joinCodeInput.onValidateInput += DelegateOnValidateInput;
@@ -79,10 +113,22 @@ public class MenuManager : MonoBehaviour
             joinCodeInput.contentType = TMP_InputField.ContentType.Alphanumeric;
         }
 
-        // Registrar para eventos de mudan�a de cena
+        // ── Local-players dropdown ───────────────────────────────────────
+        if (localPlayersDropdown != null)
+        {
+            localPlayersDropdown.ClearOptions();
+
+            List<TMP_Dropdown.OptionData> options = new List<TMP_Dropdown.OptionData>();
+            for (int i = 1; i <= 4; i++)
+                options.Add(new TMP_Dropdown.OptionData($"{i} Player{(i > 1 ? "s" : "")}"));
+
+            localPlayersDropdown.AddOptions(options);
+            localPlayersDropdown.onValueChanged.AddListener(OnLocalPlayerCountSelected);
+            OnLocalPlayerCountSelected(localPlayersDropdown.value);
+        }
+
         SceneManager.sceneLoaded += OnSceneLoaded;
 
-        // Configurar UI inicial
         ShowMainMenu();
     }
 
@@ -91,195 +137,189 @@ public class MenuManager : MonoBehaviour
         SceneManager.sceneLoaded -= OnSceneLoaded;
     }
 
+    // ====================================================================
+    // Private – Scene Load Handler
+    // ====================================================================
+
+    /// <summary>
+    /// Reacts to scene-load events.
+    /// When returning to <c>MenuScene</c>, shuts down the network and restores the menu UI.
+    /// When entering a game scene, shows the lobby panel (if connected) or the game HUD.
+    /// </summary>
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
         if (scene.name == "MenuScene")
         {
+            if (NetworkManager.Singleton != null)
+            {
+                NetworkManager.Singleton.Shutdown();
+            }
+
             UIManager.Instance.ShowMainMenuUI();
+            SetupPlatformUI(); 
         }
-        else // Assume que � a cena de jogo
+        else
         {
-            // Se estiver conectado, mostre o lobby UI por padr�o.
             if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening)
             {
-                var connectionManager = FindFirstObjectByType<NetworkConnectionManager>();
+                var connectionManager = FindAnyObjectByType<NetworkConnectionManager>();
                 bool isHost = NetworkManager.Singleton.IsHost;
                 string lobbyCode = connectionManager != null ? connectionManager.LobbyCode : "N/A";
 
-                // MOSTRA O PAINEL DE LOBBY
                 UIManager.Instance.ShowLobbyUI(isHost, lobbyCode);
             }
             else
             {
-                // Fallback: Mostrar o HUD do jogo ou outra coisa
                 UIManager.Instance.ShowGameUI();
             }
         }
     }
 
     // ====================================================================
-    // UI Callbacks
+    // Public – Dropdown Callbacks
     // ====================================================================
 
+    /// <summary>
+    /// Called when the scene-select dropdown value changes.
+    /// Updates <see cref="_selectedScene"/> to match the chosen option text.
+    /// </summary>
     public void OnSceneSelected(int index)
     {
         if (sceneDropdown != null && index >= 0 && index < sceneDropdown.options.Count)
-        {
             _selectedScene = sceneDropdown.options[index].text;
-            //Debug.Log($"Cena selecionada: {_selectedScene}");
-        }
     }
 
+    /// <summary>
+    /// Called when the player-type dropdown value changes.
+    /// Index 0 = Runner, index 1 = Catcher.
+    /// Forwards the choice to <see cref="NetworkConnectionManager.SetPlayerType"/>.
+    /// </summary>
     public void OnPlayerTypeSelected(int index)
     {
         bool isRunner = (index == 0);
         _connectionManager.SetPlayerType(isRunner);
     }
 
-    // ADICIONAR getter para cena selecionada
-    public string GetSelectedScene()
+    /// <summary>
+    /// Called when the local-player-count dropdown value changes.
+    /// Maps dropdown index to player count (index 0 -> 1 player, index 3 -> 4 players)
+    /// and stores the result in <see cref="GameSettings.LocalPlayerCount"/>.
+    /// </summary>
+    public void OnLocalPlayerCountSelected(int index)
     {
-        if (sceneDropdown != null && sceneDropdown.options.Count > 0)
-        {
-            return sceneDropdown.options[sceneDropdown.value].text;
-        }
-        return "TestScene";
+        int playerCount = index + 1;
+        GameSettings.LocalPlayerCount = playerCount;
+        Debug.Log($"[MenuManager] Local player count set to: {GameSettings.LocalPlayerCount}");
     }
 
     // ====================================================================
-    // M�TODOS DE CONEX�O
+    // Public – Scene Query
     // ====================================================================
+
+    /// <summary>
+    /// Returns the scene name currently selected in <see cref="sceneDropdown"/>.
+    /// Falls back to <c>"TestScene_Flat"</c> if the dropdown is null or empty.
+    /// </summary>
+    public string GetSelectedScene()
+    {
+        if (sceneDropdown != null && sceneDropdown.options.Count > 0)
+            return sceneDropdown.options[sceneDropdown.value].text;
+
+        return "TestScene_Flat";
+    }
+
+    // ====================================================================
+    // Public – Connection Actions
+    // ====================================================================
+
+    /// <summary>
+    /// Reads the current dropdown selections, configures the Netcode connection payload,
+    /// and delegates the host-start flow to <see cref="NetworkConnectionManager.StartHostWithScene"/>.
+    /// Temporarily disables the host button to prevent accidental double-clicks.
+    /// </summary>
     public async void StartHost()
     {
         if (_connectionManager != null)
         {
-            // Feedback visual
             SetHostButtonState(false);
 
             try
             {
-                // 1. Define o tipo de jogador
                 bool isCatcher = playerTypeDropdown.value == 1;
                 _connectionManager.SetPlayerType(isCatcher);
 
-                Debug.Log($"=== NOVA PARTIDA: Host como {(isCatcher ? "Catcher" : "Runner")} ===");
-
-                // 2. Configurar payload ANTES de iniciar
                 byte[] connectionPayload = _connectionManager.GetConnectionPayload();
                 if (NetworkManager.Singleton != null && NetworkManager.Singleton.NetworkConfig != null)
-                {
                     NetworkManager.Singleton.NetworkConfig.ConnectionData = connectionPayload;
-                    Debug.Log($"Payload configurado: {(PlayerType)connectionPayload[0]}");
-                }
 
                 string sceneName = _selectedScene;
-
-                // 3. Iniciar host
                 _connectionManager.StartHostWithScene(sceneName);
             }
             catch (Exception e)
             {
-                Debug.LogError($"Erro ao iniciar host: {e}");
-                // Reativar bot�o em caso de erro
+                Debug.LogError($"Error starting host: {e}");
                 SetHostButtonState(true);
             }
             finally
             {
-                // Reativar bot�o ap�s um tempo (ou quando a partida realmente come�ar)
                 Invoke(nameof(ReenableHostButton), 3f);
             }
         }
     }
 
-    private void SetHostButtonState(bool interactable)
-    {
-        Button hostButton = GetComponentInChildren<Button>(); // Ajuste para seu bot�o espec�fico
-        if (hostButton != null)
-        {
-            hostButton.interactable = interactable;
-            hostButton.GetComponentInChildren<TextMeshProUGUI>().text =
-                interactable ? "Host Game" : "Preparando...";
-        }
-    }
-
-    private void ReenableHostButton()
-    {
-        SetHostButtonState(true);
-    }
-
+    /// <summary>
+    /// Validates the join-code input and delegates to
+    /// <see cref="NetworkConnectionManager.StartClientWithCode"/>.
+    /// Rejects codes that are empty, not exactly 6 characters, or contain ambiguous characters
+    /// (0, O, I, L).
+    /// </summary>
     public void JoinGame()
     {
         string code = joinCodeInput != null ? joinCodeInput.text.ToUpper().Trim() : "";
 
         if (string.IsNullOrEmpty(code))
         {
-            Debug.LogError("O c�digo de lobby n�o pode estar vazio.");
-            // Adicione feedback visual para o usu�rio
+            Debug.LogError("The lobby code cannot be empty.");
             return;
         }
 
-        // Valida��o mais rigorosa do c�digo (Relay Join Codes geralmente t�m 6 caracteres)
         if (code.Length != 6)
         {
-            Debug.LogError("O c�digo do lobby deve ter exatamente 6 caracteres.");
+            Debug.LogError("The lobby code must be exactly 6 characters.");
             return;
         }
 
-        // Verifica se cont�m apenas caracteres v�lidos (A-Z e 0-9, excluindo ambiguidades)
         foreach (char c in code)
         {
             if (!char.IsLetterOrDigit(c) || c == '0' || c == 'O' || c == 'I' || c == 'L')
             {
-                Debug.LogError("C�digo cont�m caracteres inv�lidos. Use apenas letras (exceto O, I, L) e n�meros (exceto 0).");
+                Debug.LogError("Code contains invalid characters. Use letters (except O, I, L) and digits (except 0).");
                 return;
             }
         }
-
-        //
-        //($"Tentando entrar no lobby com c�digo: {code}");
 
         if (_connectionManager != null)
         {
             _connectionManager.SetPlayerType(playerTypeDropdown.value == 1);
 
-            // Adiciona loading state
             SetJoinButtonState(false);
 
             try
             {
-                // Chama o m�todo funcional de Client/Lobby no NetworkConnectionManager
                 _connectionManager.StartClientWithCode(code);
             }
             catch (Exception e)
             {
-                Debug.LogError($"Erro ao entrar no lobby: {e}");
-                // Mostra mensagem de erro para o usu�rio
+                Debug.LogError($"Error joining lobby: {e}");
             }
             finally
             {
-                // Note: O estado do bot�o deve ser redefinido em caso de falha de conex�o tamb�m,
-                // ou quando o cliente se desconecta.
                 SetJoinButtonState(true);
             }
         }
     }
 
-    // Delegate de valida��o para for�ar mai�sculas
-    private char DelegateOnValidateInput(string text, int charIndex, char addedChar)
-    {
-        // Converte o caractere adicionado para mai�sculo
-        return char.ToUpper(addedChar);
-    }
-
-    private void SetJoinButtonState(bool interactable)
-    {
-        Button joinButton = joinCodeInput?.GetComponentInParent<Button>();
-        if (joinButton != null)
-        {
-            joinButton.interactable = interactable;
-        }
-    }
-
+    /// <summary>Quits the application (also stops Play Mode in the Unity Editor).</summary>
     public void QuitGame()
     {
         Application.Quit();
@@ -289,18 +329,93 @@ public class MenuManager : MonoBehaviour
 #endif
     }
 
+    // ====================================================================
+    // Public – UI Helpers
+    // ====================================================================
+
+    /// <summary>
+    /// Activates the platform-appropriate panel and ensures the
+    /// <see cref="UIManager"/> GameObject is active in the current scene.
+    /// </summary>
     public void ShowMainMenu()
     {
-        if (mainMenuPanel != null)
-        {
-            mainMenuPanel.SetActive(true);
-        }
-        // Assegure que o UI Manager na cena principal (Menu) esteja ativo, se houver um.
-        var uiManager = FindFirstObjectByType<UIManager>(FindObjectsInactive.Include);
+        SetupPlatformUI();
+        var uiManager = FindAnyObjectByType<UIManager>(FindObjectsInactive.Include);
         if (uiManager != null)
         {
             uiManager.gameObject.SetActive(true);
-            // L�gica para esconder pain�is do jogo e mostrar pain�is de conex�o, se necess�rio.
         }
+    }
+
+    // ====================================================================
+    // Private – Platform UI
+    // ====================================================================
+
+    /// <summary>
+    /// Deactivates both panels then activates the one that matches the current
+    /// platform: <see cref="pcPanel"/> on PC / Editor, <see cref="mobilePanel"/>
+    /// on Android / iOS.
+    /// </summary>
+    private void SetupPlatformUI()
+    {
+        if (pcPanel != null) pcPanel.SetActive(false);
+        if (mobilePanel != null) mobilePanel.SetActive(false);
+
+#if UNITY_ANDROID || UNITY_IOS
+        if (mobilePanel != null) mobilePanel.SetActive(true);
+        Debug.Log("Menu: Loading Mobile interface");
+#else
+        if (pcPanel != null) pcPanel.SetActive(true);
+        Debug.Log("Menu: Loading PC interface");
+#endif
+    }
+
+    // ====================================================================
+    // Private – Button State Helpers
+    // ====================================================================
+
+    /// <summary>
+    /// Enables or disables the first child <see cref="Button"/> found on this GameObject
+    /// and updates its label text to reflect the loading state.
+    /// </summary>
+    private void SetHostButtonState(bool interactable)
+    {
+        Button hostButton = GetComponentInChildren<Button>();
+        if (hostButton != null)
+        {
+            hostButton.interactable = interactable;
+            hostButton.GetComponentInChildren<TextMeshProUGUI>().text =
+                interactable ? "Host Game" : "Loading...";
+        }
+    }
+
+    /// <summary>Re-enables the host button after the <c>Invoke</c> delay.</summary>
+    private void ReenableHostButton()
+    {
+        SetHostButtonState(true);
+    }
+
+    /// <summary>
+    /// Enables or disables the <see cref="Button"/> that is a parent of
+    /// <see cref="joinCodeInput"/> in the hierarchy.
+    /// </summary>
+    private void SetJoinButtonState(bool interactable)
+    {
+        Button joinButton = joinCodeInput?.GetComponentInParent<Button>();
+        if (joinButton != null)
+            joinButton.interactable = interactable;
+    }
+
+    // ====================================================================
+    // Private – Input Validation
+    // ====================================================================
+
+    /// <summary>
+    /// <see cref="TMP_InputField.OnValidateInput"/> delegate that converts every typed
+    /// character to its uppercase equivalent, ensuring lobby codes are always uppercase.
+    /// </summary>
+    private char DelegateOnValidateInput(string text, int charIndex, char addedChar)
+    {
+        return char.ToUpper(addedChar);
     }
 }
