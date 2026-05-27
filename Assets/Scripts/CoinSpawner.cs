@@ -23,6 +23,19 @@ public class CoinSpawner : NetworkBehaviour
     /// <summary>Full extents of the rectangular area in which coins are randomly scattered.</summary>
     public Vector3 spawnAreaSize = new Vector3(40f, 0f, 40f);
 
+    [Header("Drop Scatter Settings")]
+    /// <summary>
+    /// Half-angle of the fan behind the player in which dropped coins are scattered.
+    /// 0 = straight behind; 90 = full hemisphere behind.
+    /// </summary>
+    public float dropSpreadAngle = 55f;
+
+    /// <summary>Minimum distance from the player at which a dropped coin can land.</summary>
+    public float dropMinDistance = 0.6f;
+
+    /// <summary>Maximum distance from the player at which a dropped coin can land.</summary>
+    public float dropMaxDistance = 3.5f;
+
     [Header("Collision and Layers")]
     /// <summary>Static obstacles that coins must not overlap at spawn time.</summary>
     public LayerMask obstacleLayer;
@@ -48,6 +61,12 @@ public class CoinSpawner : NetworkBehaviour
 
     private LayerMask _avoidanceMask;
     private bool _hasSpawnedInitialCoins;
+
+    /// <summary>Attempts confined to the fan before expanding to a full circle.</summary>
+    private const int DropFanAttempts = 8;
+
+    /// <summary>Total placement attempts per coin (fan + full-circle fallback).</summary>
+    private const int DropTotalAttempts = 14;
 
     // ====================================================================
     // NetworkBehaviour
@@ -130,6 +149,76 @@ public class CoinSpawner : NetworkBehaviour
 
             SpawnCoin(pos);
         }
+    }
+
+    /// <summary>
+    /// Spawns <paramref name="count"/> coins scattered in a fan-shaped area behind the player.
+    /// Each coin lands at a random angle within <see cref="dropSpreadAngle"/> degrees
+    /// of the player's back direction, at a random distance between
+    /// <see cref="dropMinDistance"/> and <see cref="dropMaxDistance"/>.
+    /// Each position is floor-snapped via a downward raycast.
+    /// Server-only.
+    /// </summary>
+    /// <param name="origin">World-space spawn origin (typically the player's position).</param>
+    /// <param name="facing">The direction the player is currently facing.</param>
+    /// <param name="count">Number of coins to spawn.</param>
+    public void SpawnDroppedCoinsDirectional_Server(Vector3 origin, Vector3 facing, int count)
+    {
+        if (!IsServer) return;
+
+        Vector3 behindDir = -Vector3.ProjectOnPlane(facing, Vector3.up);
+        if (behindDir.sqrMagnitude < 0.001f) behindDir = Vector3.back;
+        else behindDir.Normalize();
+
+        for (int i = 0; i < count; i++)
+        {
+            if (TryFindDropPosition(origin, behindDir, out Vector3 pos))
+                SpawnCoin(pos);
+            else
+                Debug.LogWarning("[CoinSpawner] Could not find a valid drop position — coin skipped.");
+        }
+    }
+
+    /// <summary>
+    /// Searches for a valid coin drop position within the fan behind the player.
+    /// The first <see cref="DropFanAttempts"/> tries are confined to the fan sector;
+    /// remaining attempts expand to a full circle around <paramref name="origin"/>.
+    /// A position is valid when a floor is detected below it and no obstacle
+    /// overlaps within <see cref="coinOverlapRadius"/>.
+    /// </summary>
+    /// <param name="origin">World-space origin of the search (player position).</param>
+    /// <param name="behindDir">Normalised direction pointing behind the player.</param>
+    /// <param name="result">Valid spawn position, or <see cref="Vector3.zero"/> on failure.</param>
+    /// <returns><c>true</c> if a valid position was found.</returns>
+    private bool TryFindDropPosition(Vector3 origin, Vector3 behindDir, out Vector3 result)
+    {
+        for (int i = 0; i < DropTotalAttempts; i++)
+        {
+            // First half: constrained to the drop fan.
+            // Second half: full-circle fallback in case the fan is entirely blocked.
+            float angle = i < DropFanAttempts
+                ? Random.Range(-dropSpreadAngle, dropSpreadAngle)
+                : Random.Range(-180f, 180f);
+
+            Vector3 dir = Quaternion.AngleAxis(angle, Vector3.up) * behindDir;
+            float dist = Random.Range(dropMinDistance, dropMaxDistance);
+            Vector3 pos = origin + dir * dist;
+            pos.y = origin.y;
+
+            if (!Physics.Raycast(pos + Vector3.up * 5f, Vector3.down, out RaycastHit hit, 10f, floorLayer))
+                continue;
+
+            pos.y = hit.point.y + 0.5f;
+
+            if (Physics.OverlapSphere(pos, coinOverlapRadius, obstacleLayer).Length == 0)
+            {
+                result = pos;
+                return true;
+            }
+        }
+
+        result = Vector3.zero;
+        return false;
     }
 
     /// <summary>

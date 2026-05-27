@@ -5,7 +5,7 @@ using UnityEngine.UI;
 /// <summary>
 /// Represents an interactive pressure-plate zone on the map.
 /// </summary>
-public class ButtonSpawner : NetworkBehaviour
+public class ButtonSpawner : NetworkBehaviour, IButtonZone
 {
     // ====================================================================
     // Inspector
@@ -30,6 +30,12 @@ public class ButtonSpawner : NetworkBehaviour
 
     /// <summary>Local offset from the button's position at which the progress bar is anchored.</summary>
     public Vector3 progressBarOffset = new Vector3(0f, 2f, 0f);
+
+    /// <summary>
+    /// Uniform scale applied to the progress bar prefab instance.
+    /// Values below 1 make it smaller; adjust in the Inspector to taste.
+    /// </summary>
+    public float progressBarScale = 0.5f;
 
     // ====================================================================
     // Network Variables
@@ -226,6 +232,8 @@ public class ButtonSpawner : NetworkBehaviour
             transform.position + progressBarOffset,
             Quaternion.identity,
             transform);
+
+        barGO.transform.localScale = Vector3.one * progressBarScale;
 
         _progressBar = barGO.GetComponentInChildren<Slider>();
 

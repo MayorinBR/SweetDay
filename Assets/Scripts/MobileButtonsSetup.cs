@@ -1,6 +1,8 @@
 ﻿using System.Linq;
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.EnhancedTouch;
 using UnityEngine.UI;
 
 /// <summary>
@@ -43,6 +45,7 @@ public class MobileButtonsSetup : MonoBehaviour
     private void Start()
     {
 #if UNITY_EDITOR || UNITY_ANDROID || UNITY_IOS
+        TouchSimulation.Enable();
         SetButtonVisibility(visible: false);
 
         if (NetworkManager.Singleton != null)
@@ -60,16 +63,15 @@ public class MobileButtonsSetup : MonoBehaviour
 #endif
     }
 
+#if UNITY_EDITOR || UNITY_ANDROID || UNITY_IOS
     private void Update()
     {
-#if UNITY_EDITOR || UNITY_ANDROID || UNITY_IOS
         if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsClient) return;
 
-        // Re-run setup if setup never completed or if the tracked player was destroyed.
         if (!_isSetupComplete || _currentPlayerTracked == null)
             FindAndSetupButtons();
-#endif
     }
+#endif
 
     // ====================================================================
     // Public API

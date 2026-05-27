@@ -1,10 +1,10 @@
-using TMPro;
+Ôªøusing TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>
-/// Holds references to all main-menu UI controls and wires their callbacks to
-/// <see cref="MenuManager"/> whenever the component is enabled or the scene reloads.
+/// Scene-side bridge that holds references to the main-menu UI elements and
+/// wires them to <see cref="MenuManager"/> whenever the component is enabled.
 /// </summary>
 public class MenuButtonHolder : MonoBehaviour
 {
@@ -12,29 +12,26 @@ public class MenuButtonHolder : MonoBehaviour
     // Inspector
     // ====================================================================
 
-    [Header("Button References")]
-    /// <summary>Button that starts a hosted session.</summary>
-    public Button hostButton;
+    [Header("Main Menu Buttons")]
+    /// <summary>Starts a local split-screen session. Wired to <see cref="MenuManager.OnLocalMultiplayerClickedPublic"/>.</summary>
+    public Button localMultiplayerButton;
 
-    /// <summary>Button that joins an existing session by code.</summary>
+    /// <summary>Starts an online relay session. Wired to <see cref="MenuManager.OnOnlineMultiplayerClickedPublic"/>.</summary>
+    public Button onlineMultiplayerButton;
+
+    /// <summary>Joins an existing session by code. Wired to <see cref="MenuManager.OnJoinClickedPublic"/>.</summary>
     public Button joinButton;
 
-    /// <summary>Button that quits the application.</summary>
+    /// <summary>Quits the application. Wired to <see cref="MenuManager.QuitGame"/>.</summary>
     public Button quitButton;
 
-    [Header("Dropdown References")]
-    /// <summary>Dropdown for selecting the game scene (map).</summary>
-    public TMP_Dropdown sceneDropdown;
-
-    /// <summary>Dropdown for selecting Runner or Catcher role.</summary>
-    public TMP_Dropdown playerTypeDropdown;
-
-    [Header("Input References")]
-    /// <summary>Input field where the player types the lobby join code.</summary>
+    [Header("Input")]
+    /// <summary>Input field for the lobby join code. Reference passed to <see cref="MenuManager.joinCodeInput"/>.</summary>
     public TMP_InputField joinCodeInput;
 
-    /// <summary>Dropdown for choosing how many local players share this machine.</summary>
-    public TMP_Dropdown localPlayersDropdown;
+    [Header("Feedback")]
+    /// <summary>Status label for loading/error messages. Reference passed to <see cref="MenuManager.statusText"/>.</summary>
+    public TextMeshProUGUI statusText;
 
     // ====================================================================
     // Unity Lifecycle
@@ -48,131 +45,95 @@ public class MenuButtonHolder : MonoBehaviour
     // ====================================================================
 
     /// <summary>
-    /// Re-wires all button and dropdown listeners to the current
+    /// Re-wires all button listeners and passes UI references to
     /// <see cref="MenuManager.Instance"/>.  Safe to call multiple times.
     /// </summary>
     public void ReconnectButtons()
     {
         if (MenuManager.Instance != null)
         {
-            // Update the MenuManager's platform-panel reference.
-#if UNITY_ANDROID || UNITY_IOS
-            MenuManager.Instance.mobilePanel = transform.parent?.gameObject;
-#else
-            MenuManager.Instance.pcPanel = transform.parent?.gameObject;
-#endif
+            // Pass UI references so MenuManager can control them.
+            if (joinCodeInput != null) MenuManager.Instance.joinCodeInput = joinCodeInput;
+            if (statusText != null) MenuManager.Instance.statusText = statusText;
 
-            // Scene dropdown.
-            if (sceneDropdown != null)
+            // Wire buttons.
+            if (localMultiplayerButton != null)
             {
-                MenuManager.Instance.sceneDropdown = sceneDropdown;
-                sceneDropdown.onValueChanged.RemoveAllListeners();
-                sceneDropdown.onValueChanged.AddListener(MenuManager.Instance.OnSceneSelected);
+                MenuManager.Instance.localMultiplayerButton = localMultiplayerButton;
+                localMultiplayerButton.onClick.RemoveAllListeners();
+                localMultiplayerButton.onClick.AddListener(MenuManager.Instance.OnLocalMultiplayerClickedPublic);
             }
 
-            // Player-type dropdown.
-            if (playerTypeDropdown != null)
+            if (onlineMultiplayerButton != null)
             {
-                MenuManager.Instance.playerTypeDropdown = playerTypeDropdown;
-                playerTypeDropdown.onValueChanged.RemoveAllListeners();
-                playerTypeDropdown.onValueChanged.AddListener(MenuManager.Instance.OnPlayerTypeSelected);
+                MenuManager.Instance.onlineMultiplayerButton = onlineMultiplayerButton;
+                onlineMultiplayerButton.onClick.RemoveAllListeners();
+                onlineMultiplayerButton.onClick.AddListener(MenuManager.Instance.OnOnlineMultiplayerClickedPublic);
             }
 
-            // Join-code input.
-            if (joinCodeInput != null)
-                MenuManager.Instance.joinCodeInput = joinCodeInput;
-
-            // Local-players dropdown.
-            if (localPlayersDropdown != null)
+            if (joinButton != null)
             {
-                localPlayersDropdown.onValueChanged.RemoveAllListeners();
-                localPlayersDropdown.onValueChanged.AddListener(MenuManager.Instance.OnLocalPlayerCountSelected);
+                MenuManager.Instance.joinButton = joinButton;
+                joinButton.onClick.RemoveAllListeners();
+                joinButton.onClick.AddListener(MenuManager.Instance.OnJoinClickedPublic);
             }
         }
 
-        // Host button.
-        if (hostButton != null)
-        {
-            hostButton.onClick.RemoveAllListeners();
-            hostButton.onClick.AddListener(OnHostButtonClicked);
-        }
-
-        // Join button.
-        if (joinButton != null)
-        {
-            joinButton.onClick.RemoveAllListeners();
-            joinButton.onClick.AddListener(OnJoinButtonClicked);
-        }
-
-        // Quit button.
+        // Quit button wired directly (does not require MenuManager).
         if (quitButton != null)
         {
             quitButton.onClick.RemoveAllListeners();
-            quitButton.onClick.AddListener(OnQuitButtonClicked);
+            quitButton.onClick.AddListener(OnQuitClicked);
         }
     }
 
     /// <summary>
-    /// Scans child GameObjects for buttons, dropdowns, and input fields by name,
-    /// then calls <see cref="ReconnectButtons"/> to wire them up.
-    /// Useful when the hierarchy is built dynamically.
+    /// Scans children for buttons, input fields, and text labels by name and
+    /// calls <see cref="ReconnectButtons"/>.
     /// </summary>
     public void FindButtonsAutomatically()
     {
         foreach (var btn in GetComponentsInChildren<Button>(includeInactive: true))
         {
             string n = btn.name.ToLower();
-            if (n.Contains("host") || n.Contains("criar")) hostButton = btn;
-            else if (n.Contains("join") || n.Contains("entrar")) joinButton = btn;
-            else if (n.Contains("quit") || n.Contains("sair")) quitButton = btn;
+            if (n.Contains("local")) localMultiplayerButton = btn;
+            else if (n.Contains("online")) onlineMultiplayerButton = btn;
+            else if (n.Contains("join")) joinButton = btn;
+            else if (n.Contains("quit")) quitButton = btn;
         }
 
-        foreach (var dd in GetComponentsInChildren<TMP_Dropdown>(includeInactive: true))
+        if (joinCodeInput == null)
+            joinCodeInput = GetComponentInChildren<TMP_InputField>(includeInactive: true);
+
+        foreach (var tmp in GetComponentsInChildren<TextMeshProUGUI>(includeInactive: true))
         {
-            string n = dd.name.ToLower();
-            if (n.Contains("scene") || n.Contains("cena")) sceneDropdown = dd;
-            else if (n.Contains("player") || n.Contains("tipo")) playerTypeDropdown = dd;
+            if (tmp.name.ToLower().Contains("status"))
+            { statusText = tmp; break; }
         }
-
-        var input = GetComponentInChildren<TMP_InputField>(includeInactive: true);
-        if (input != null) joinCodeInput = input;
 
         ReconnectButtons();
     }
 
     /// <summary>
-    /// Static convenience method: finds the first <see cref="MenuButtonHolder"/> in the
-    /// scene, auto-discovers its controls, and reconnects all listeners.
-    /// Intended to be called after a scene load by <see cref="NetworkConnectionManager"/>.
+    /// Static convenience: finds the first <see cref="MenuButtonHolder"/> in the
+    /// scene, auto-discovers controls, and reconnects listeners.
     /// </summary>
     public static void ReconnectAllButtonsInScene()
     {
         var holder = FindAnyObjectByType<MenuButtonHolder>();
-        if (holder != null)
-        {
-            holder.FindButtonsAutomatically();
-            holder.ReconnectButtons();
-        }
+        holder?.FindButtonsAutomatically();
+        holder?.ReconnectButtons();
     }
 
     // ====================================================================
-    // Private ÅEButton Callbacks
+    // Private
     // ====================================================================
 
-    private void OnHostButtonClicked()
+    private void OnQuitClicked()
     {
         if (MenuManager.Instance != null)
-            MenuManager.Instance.StartHost();
+            MenuManager.Instance.QuitGame();
         else
-        {
-            Debug.LogError("[MenuButtonHolder] MenuManager.Instance is null ÅEcannot start host.");
-            FindAnyObjectByType<MenuManager>()?.StartHost();
-        }
+            Application.Quit();
     }
-
-    private void OnJoinButtonClicked()
-        => MenuManager.Instance?.JoinGame();
-
-    private void OnQuitButtonClicked()
-        => MenuManager.Instance?.QuitGame();
 }

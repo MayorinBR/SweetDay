@@ -82,7 +82,6 @@ public class CatcherAttack : MonoBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
-        // Only the server processes hit logic to maintain authority.
         if (_gameManager == null || !_gameManager.IsServer) return;
         if (ownerNetworkObject == null || _hasHit) return;
         if (!other.CompareTag("Player")) return;
@@ -93,8 +92,7 @@ public class CatcherAttack : MonoBehaviour
         var playerNetObj = other.GetComponent<NetworkObject>();
         if (playerNetObj == null) return;
 
-        // Prevent the guard from hitting itself (important for split-screen where
-        // multiple local players share the same OwnerClientId).
+        // Prevent the guard from hitting itself
         if (playerNetObj.NetworkObjectId == ownerNetworkObject.NetworkObjectId) return;
 
         _hasHit = true;
@@ -102,7 +100,6 @@ public class CatcherAttack : MonoBehaviour
         _gameManager.ProcessPlayerHitWithReferenceServerRpc(
             new NetworkObjectReference(playerNetObj));
 
-        // Close the damage window immediately after the first confirmed hit.
         DeactivateDamage();
         CancelInvoke(nameof(DeactivateDamage));
     }

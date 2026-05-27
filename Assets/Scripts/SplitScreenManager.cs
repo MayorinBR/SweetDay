@@ -1,11 +1,24 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using Unity.Netcode;
 using UnityEngine;
 
 /// <summary>
-/// Creates and manages per-player camera instances for local split-screen play.
+/// Defines which player group occupies the screen when only one physical
+/// display is detected.
+/// </summary>
+public enum SingleScreenTarget
+{
+    /// <summary>Runners are shown on the single screen (default).</summary>
+    Runners,
+    /// <summary>Catchers are shown on the single screen.</summary>
+    Catchers,
+}
+
+/// <summary>
+/// Creates and manages per-player cameras for local split-screen play
+/// In all cases the cameras are tiled to fill their assigned display.
 /// </summary>
 public class SplitScreenManager : MonoBehaviour
 {
@@ -13,21 +26,23 @@ public class SplitScreenManager : MonoBehaviour
     // Inspector
     // ====================================================================
 
-    [SerializeField, Tooltip("Prefab that must contain a Camera and a CameraFollow component.")]
+    [SerializeField, Tooltip("Prefab with a Camera + CameraFollow component. Used for all player cameras.")]
     private GameObject cameraPrefab;
 
     // ====================================================================
     // Private
     // ====================================================================
 
-    private readonly List<Camera> _playerCameras = new List<Camera>();
+    /// <summary>All cameras created for Runner players (Display 1).</summary>
+    private readonly List<Camera> _runnerCameras = new List<Camera>();
+
+    /// <summary>All cameras created for Catcher players (Display 2).</summary>
+    private readonly List<Camera> _catcherCameras = new List<Camera>();
+
     private readonly List<CameraFollow> _cameraFollows = new List<CameraFollow>();
 
-    /// <summary>Maximum seconds to wait for local players to spawn before giving up.</summary>
     private const float SpawnWaitTimeout = 5f;
-
-    /// <summary>Polling interval while waiting for players to appear.</summary>
-    private const float SpawnPollInterval = 0.5f;
+    private const float SpawnPollInterval = 0.25f;
 
     // ====================================================================
     // Unity Lifecycle
@@ -42,8 +57,8 @@ public class SplitScreenManager : MonoBehaviour
     // ====================================================================
 
     /// <summary>
-    /// Tears down existing cameras and rebuilds them from scratch.
-    /// Call this after the player roster changes (e.g. extra local players spawned).
+    /// Tears down all cameras and rebuilds them from scratch.
+    /// Call whenever the player roster changes.
     /// </summary>
     public void RefreshCameras()
     {
@@ -55,88 +70,61 @@ public class SplitScreenManager : MonoBehaviour
     public void ResetCameras() => RefreshCameras();
 
     /// <summary>
-    /// Destroys all camera GameObjects managed by this component and clears the
-    /// internal lists.  Also sweeps the scene for any stray "PlayerCamera_*" objects.
+    /// Destroys all managed camera GameObjects and clears internal lists.
     /// </summary>
     public void CleanupCameras()
     {
         StopAllCoroutines();
 
-        foreach (var cam in _playerCameras)
-        {
-            if (cam != null) Destroy(cam.gameObject);
-        }
+        foreach (var cam in _runnerCameras) if (cam != null) Destroy(cam.gameObject);
+        foreach (var cam in _catcherCameras) if (cam != null) Destroy(cam.gameObject);
 
-        _playerCameras.Clear();
+        _runnerCameras.Clear();
+        _catcherCameras.Clear();
         _cameraFollows.Clear();
-
-        // Safety sweep: destroy any leftover player-camera GameObjects.
-        foreach (var go in GameObject.FindGameObjectsWithTag("MainCamera"))
-        {
-            if (go.name.Contains("PlayerCamera"))
-                Destroy(go);
-        }
     }
 
     /// <summary>
-    /// Forces every <see cref="CameraFollow"/> in the scene to snap to its current target.
-    /// Used after a teleport or round reset to prevent the camera from sliding in
-    /// from a stale position.
+    /// Snaps every active <see cref="CameraFollow"/> to its current target.
     /// </summary>
     public void ResetAllCameras()
     {
         foreach (var cf in FindObjectsByType<CameraFollow>(FindObjectsInactive.Exclude))
-        {
             if (cf.Target != null) cf.ForcePosition();
-        }
     }
 
     /// <summary>
-    /// Reassigns each existing <see cref="CameraFollow"/> to the first local-owner
-    /// player or guard it can find, then snaps the camera position.
-    /// Called by <see cref="GameManager"/> after a round reset via ClientRpc.
+    /// Reassigns each managed <see cref="CameraFollow"/> to the first local-owner
+    /// player of the appropriate type, then snaps its position.
+    /// Called after a round reset.
     /// </summary>
     public void ReassignCamerasAfterReset()
     {
-        foreach (var cf in FindObjectsByType<CameraFollow>(FindObjectsInactive.Exclude))
-        {
-            // Try runners first.
-            var runner = FindObjectsByType<PlayerMovement>(FindObjectsInactive.Exclude)
-                .FirstOrDefault(p => p.IsOwner);
+        AssignFollowTargets(
+            _runnerCameras,
+            FindObjectsByType<PlayerMovement>(FindObjectsInactive.Exclude)
+                .Where(p => p.IsOwner)
+                .OrderBy(p => p.playerNumber.Value)
+                .Select(p => p.gameObject)
+                .ToList());
 
-            if (runner != null)
-            {
-                cf.Target = runner.transform;
-                cf.ForcePosition();
-                continue;
-            }
-
-            // Fall back to guards.
-            var guard = FindObjectsByType<Guard>(FindObjectsInactive.Exclude)
-                .FirstOrDefault(g => g.IsOwner);
-
-            if (guard != null)
-            {
-                cf.Target = guard.transform;
-                cf.ForcePosition();
-            }
-        }
+        AssignFollowTargets(
+            _catcherCameras,
+            FindObjectsByType<Guard>(FindObjectsInactive.Exclude)
+                .Where(g => g.IsOwner)
+                .OrderBy(g => g.playerNumber.Value)
+                .Select(g => g.gameObject)
+                .ToList());
     }
 
-    /// <summary>
-    /// Finds the <see cref="CameraFollow"/> currently tracking <paramref name="player"/>
-    /// and forces it to snap to the player's position.
-    /// </summary>
+    /// <summary>Finds the camera tracking <paramref name="player"/> and snaps it.</summary>
     public void ResetCameraForPlayer(PlayerMovement player)
     {
         if (player == null || !player.IsOwner) return;
         FindCameraFollowing(player.transform)?.ForcePosition();
     }
 
-    /// <summary>
-    /// Finds the <see cref="CameraFollow"/> currently tracking <paramref name="guard"/>
-    /// and forces it to snap to the guard's position.
-    /// </summary>
+    /// <summary>Finds the camera tracking <paramref name="guard"/> and snaps it.</summary>
     public void ResetCameraForPlayer(Guard guard)
     {
         if (guard == null || !guard.IsOwner) return;
@@ -144,106 +132,208 @@ public class SplitScreenManager : MonoBehaviour
     }
 
     // ====================================================================
-    // Private �ESetup Coroutine
+    // Private – Setup Coroutine
     // ====================================================================
 
     /// <summary>
-    /// Polls until all expected local player objects are present in the scene,
-    /// then calls <see cref="SetupSplitScreen"/>.
+    /// Polls until at least one locally-owned player has spawned
+    /// (up to <see cref="SpawnWaitTimeout"/> seconds), then builds cameras.
+    /// No longer depends on <see cref="GameSettings"/> counts — the actual
+    /// number of local players is determined at runtime from spawned objects.
     /// </summary>
     private IEnumerator WaitAndSetup()
     {
         CleanupCameras();
 
-        int expected = GameSettings.LocalPlayerCount;
         float elapsed = 0f;
 
-        var localObjects = new List<GameObject>();
+        List<GameObject> runners = new List<GameObject>();
+        List<GameObject> catchers = new List<GameObject>();
 
-        while (localObjects.Count < expected && elapsed < SpawnWaitTimeout)
+        while (runners.Count == 0 && catchers.Count == 0 && elapsed < SpawnWaitTimeout)
         {
-            localObjects.Clear();
+            runners = FindObjectsByType<PlayerMovement>(FindObjectsInactive.Exclude)
+                .Where(p => p.IsSpawned && p.IsOwner)
+                .OrderBy(p => p.playerNumber.Value)
+                .Select(p => p.gameObject)
+                .ToList();
 
-            localObjects.AddRange(
-                FindObjectsByType<PlayerMovement>(FindObjectsInactive.Exclude)
-                    .Where(p => p.IsSpawned && p.IsOwner)
-                    .Select(p => p.gameObject));
+            catchers = FindObjectsByType<Guard>(FindObjectsInactive.Exclude)
+                .Where(g => g.IsSpawned && g.IsOwner)
+                .OrderBy(g => g.playerNumber.Value)
+                .Select(g => g.gameObject)
+                .ToList();
 
-            localObjects.AddRange(
-                FindObjectsByType<Guard>(FindObjectsInactive.Exclude)
-                    .Where(g => g.IsSpawned && g.IsOwner)
-                    .Select(g => g.gameObject));
-
-            if (localObjects.Count < expected)
+            if (runners.Count == 0 && catchers.Count == 0)
             {
                 elapsed += SpawnPollInterval;
                 yield return new WaitForSeconds(SpawnPollInterval);
             }
+            else
+            {
+                break;
+            }
         }
 
-        if (localObjects.Count == 0) yield break;
+        if (runners.Count == 0 && catchers.Count == 0)
+        {
+            Debug.LogWarning("[SplitScreenManager] No locally-owned players found after timeout.");
+            yield break;
+        }
 
-        // Sort by player number so cameras are assigned in the correct order.
-        localObjects = localObjects
-            .Where(o => o != null)
-            .OrderBy(o =>
-            {
-                var pm = o.GetComponent<PlayerMovement>();
-                if (pm != null) return pm.playerNumber.Value;
-                var g = o.GetComponent<Guard>();
-                return g != null ? g.playerNumber.Value : 99;
-            })
-            .ToList();
-
-        SetupSplitScreen(localObjects);
+        BuildCameras(runners, catchers);
     }
 
     // ====================================================================
-    // Private �ECamera Setup
+    // Private – Camera Creation
     // ====================================================================
 
     /// <summary>
-    /// Instantiates one camera prefab per target in <paramref name="targets"/>,
-    /// assigns viewports, and wires up <see cref="CameraFollow"/> targets.
+    /// Builds per-player cameras according to which roles are actually present.
+    ///
+    /// <b>Rules (in priority order):</b>
+    /// <list type="number">
+    ///   <item>Only Runners present → all cameras on Display 1.</item>
+    ///   <item>Only Catchers present → all cameras on Display 1.</item>
+    ///   <item>Both present → Runners on Display 1, Catchers on Display 2.
+    ///         In the Editor Display 2 is simulated by a second Game View;
+    ///         in a build a second monitor must be connected.</item>
+    /// </list>
+    ///
+    /// The Inspector field <see cref="singleScreenFallback"/> is no longer used
+    /// for the single-type case — whichever type is playing always gets Screen 1.
     /// </summary>
-    private void SetupSplitScreen(List<GameObject> targets)
+    private void BuildCameras(List<GameObject> runners, List<GameObject> catchers)
     {
         CleanupCameras();
 
-        // Disable the scene's main camera when running split-screen.
-        if (Camera.main != null && targets.Count > 1)
-            Camera.main.enabled = false;
+        // Disable the scene main camera — replaced by per-player cameras.
+        if (Camera.main != null) Camera.main.enabled = false;
 
-        for (int i = 0; i < targets.Count; i++)
+        bool hasRunners = runners.Count > 0;
+        bool hasCatchers = catchers.Count > 0;
+        bool bothPresent = hasRunners && hasCatchers;
+
+        if (!bothPresent)
         {
-            GameObject camObj = Instantiate(cameraPrefab);
-            Camera cam = camObj.GetComponent<Camera>();
-            CameraFollow follow = camObj.GetComponent<CameraFollow>();
+            // ── Single role: whichever is playing uses Display 1 ──────────
+            List<GameObject> targets = hasRunners ? runners : catchers;
+            bool isCatchers = !hasRunners;
 
-            // Only P1 keeps an AudioListener.
-            if (i > 0)
+            for (int i = 0; i < targets.Count; i++)
             {
-                var listener = camObj.GetComponentInChildren<AudioListener>();
-                if (listener != null) Destroy(listener);
+                var cam = CreateCamera(
+                    $"Camera_P{i + 1}", targets[i].transform,
+                    GetViewportRect(i, targets.Count),
+                    MultiScreenManager.RunnerDisplayIndex,   // always Display 1
+                    keepListener: i == 0);
+
+                if (isCatchers) _catcherCameras.Add(cam);
+                else _runnerCameras.Add(cam);
             }
 
-            cam.rect = GetViewportRect(i, targets.Count);
+            Debug.Log($"[SplitScreenManager] Single-role session — " +
+                      $"{(isCatchers ? "Catchers" : "Runners")} ({targets.Count} camera(s)) on Display 1.");
 
-            if (follow != null)
+            SplitScreenBorder.Instance?.Rebuild(targets.Count);
+        }
+        else
+        {
+            // ── Both roles: Runners → Display 1, Catchers → Display 2 ────
+#if UNITY_EDITOR
+            // In the Editor, open a second Game View and set it to Display 2
+            // via the dropdown in the Game View title bar.
+            Debug.Log("[SplitScreenManager] Dual-role session in Editor. " +
+                      "Open a second Game View and set it to Display 2 for the catcher view.");
+#else
+            if (Display.displays.Length <= MultiScreenManager.CatcherDisplayIndex)
             {
-                follow.Target = targets[i].transform;
-                follow.ForcePosition();
-                _cameraFollows.Add(follow);
+                Debug.LogWarning("[SplitScreenManager] Two roles detected but only one " +
+                                 "physical display connected. Catchers will be invisible. " +
+                                 "Connect a second monitor for split-display play.");
             }
+#endif
 
-            camObj.name = $"PlayerCamera_P{i + 1}";
-            _playerCameras.Add(cam);
+            for (int i = 0; i < runners.Count; i++)
+                _runnerCameras.Add(CreateCamera(
+                    $"RunnerCamera_P{i + 1}", runners[i].transform,
+                    GetViewportRect(i, runners.Count),
+                    MultiScreenManager.RunnerDisplayIndex, keepListener: i == 0));
+
+            for (int i = 0; i < catchers.Count; i++)
+                _catcherCameras.Add(CreateCamera(
+                    $"CatcherCamera_P{i + 1}", catchers[i].transform,
+                    GetViewportRect(i, catchers.Count),
+                    MultiScreenManager.CatcherDisplayIndex, keepListener: i == 0));
+
+            Debug.Log($"[SplitScreenManager] Dual-role — " +
+                      $"{runners.Count} runner camera(s) on Display 1, " +
+                      $"{catchers.Count} catcher camera(s) on Display 2.");
+
+            SplitScreenBorder.Instance?.Rebuild(runners.Count);
         }
     }
 
     /// <summary>
-    /// Returns the normalised <see cref="Rect"/> for camera <paramref name="index"/>
-    /// given <paramref name="total"/> active players.
+    /// Instantiates one camera from <see cref="cameraPrefab"/>, configures its
+    /// viewport, display target, and <see cref="CameraFollow"/> target.
+    /// </summary>
+    private Camera CreateCamera(
+        string name,
+        Transform target,
+        Rect viewportRect,
+        int displayIndex,
+        bool keepListener)
+    {
+        GameObject obj = Instantiate(cameraPrefab);
+        obj.name = name;
+
+        Camera cam = obj.GetComponent<Camera>();
+        cam.rect = viewportRect;
+        cam.targetDisplay = displayIndex;
+
+        // Remove extra AudioListeners to prevent Unity's warning.
+        if (!keepListener)
+        {
+            var al = obj.GetComponentInChildren<AudioListener>();
+            if (al != null) Destroy(al);
+        }
+
+        CameraFollow follow = obj.GetComponent<CameraFollow>();
+        if (follow != null)
+        {
+            follow.Target = target;
+            follow.ForcePosition();
+            _cameraFollows.Add(follow);
+        }
+
+        return cam;
+    }
+
+    // ====================================================================
+    // Private – Helpers
+    // ====================================================================
+
+    /// <summary>
+    /// Re-assigns the <see cref="CameraFollow"/> on each camera in
+    /// <paramref name="cameras"/> to the corresponding target in
+    /// <paramref name="targets"/>, then snaps each camera.
+    /// </summary>
+    private static void AssignFollowTargets(List<Camera> cameras, List<GameObject> targets)
+    {
+        int count = Mathf.Min(cameras.Count, targets.Count);
+        for (int i = 0; i < count; i++)
+        {
+            var follow = cameras[i].GetComponent<CameraFollow>();
+            if (follow == null) continue;
+            follow.Target = targets[i].transform;
+            follow.ForcePosition();
+        }
+    }
+
+    /// <summary>
+    /// Returns the normalised <see cref="Rect"/> for camera at <paramref name="index"/>
+    /// among <paramref name="total"/> cameras sharing the same display.
     /// </summary>
     private static Rect GetViewportRect(int index, int total)
     {
@@ -253,19 +343,19 @@ public class SplitScreenManager : MonoBehaviour
                 return new Rect(0f, 0f, 1f, 1f);
 
             case 2:
-                // P1 left | P2 right
+                // Left | Right
                 return index == 0
                     ? new Rect(0f, 0f, 0.5f, 1f)
                     : new Rect(0.5f, 0f, 0.5f, 1f);
 
             case 3:
-                // P1 full top | P2 bottom-left | P3 bottom-right
+                // Full top | bottom-left | bottom-right
                 if (index == 0) return new Rect(0f, 0.5f, 1f, 0.5f);
                 if (index == 1) return new Rect(0f, 0f, 0.5f, 0.5f);
                 return new Rect(0.5f, 0f, 0.5f, 0.5f);
 
             case 4:
-                // 2�2 grid
+                // 2 × 2 grid
                 if (index == 0) return new Rect(0f, 0.5f, 0.5f, 0.5f);
                 if (index == 1) return new Rect(0.5f, 0.5f, 0.5f, 0.5f);
                 if (index == 2) return new Rect(0f, 0f, 0.5f, 0.5f);
@@ -276,20 +366,10 @@ public class SplitScreenManager : MonoBehaviour
         }
     }
 
-    // ====================================================================
-    // Private �EUtility
-    // ====================================================================
-
-    /// <summary>
-    /// Returns the first <see cref="CameraFollow"/> whose <c>Target</c> matches
-    /// <paramref name="target"/>, or <c>null</c> if none is found.
-    /// </summary>
     private static CameraFollow FindCameraFollowing(Transform target)
     {
         foreach (var cf in FindObjectsByType<CameraFollow>(FindObjectsInactive.Exclude))
-        {
             if (cf.Target == target) return cf;
-        }
         return null;
     }
 }
