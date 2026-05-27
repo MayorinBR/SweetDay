@@ -2,13 +2,12 @@
 using TMPro;
 using Unity.Netcode;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using static GameManager;
 
 /// <summary>
-/// Manages all in-game and lobby UI panels: HUD, lobby screen, end-game panel,
-/// and cooldown displays for Dash and Attack abilities.
+/// Manages the in-game HUD: score, timer, lives, Dash and Attack cooldown
+/// displays, the end-game panel, and the mobile virtual joystick toggle.
 /// </summary>
 public class UIManager : MonoBehaviour
 {
@@ -24,39 +23,54 @@ public class UIManager : MonoBehaviour
     // ====================================================================
 
     [Header("Game HUD")]
-    /// <summary>Label that displays the current score and target (e.g. "Coins: 5 / 20").</summary>
+    /// <summary>Label showing the current score vs target, e.g. "Coins: 5 / 20".</summary>
     public TextMeshProUGUI scoreText;
 
-    /// <summary>Label that displays the remaining game time in MM:SS format.</summary>
+    /// <summary>Label showing remaining time in MM:SS format.</summary>
     public TextMeshProUGUI timerText;
 
-    /// <summary>Panel shown at the end of a match with the result.</summary>
+    /// <summary>Panel shown at the end of a match.</summary>
     public GameObject endGamePanel;
 
-    /// <summary>Sprite used to render each life icon in <see cref="livesContainer"/>.</summary>
+    /// <summary>Sprite used for each life icon.</summary>
     public Sprite lifeIconSprite;
 
-    /// <summary>Width in pixels of each life icon image.</summary>
+    /// <summary>Width in pixels of each life icon.</summary>
     public float lifeIconWidth = 50f;
 
-    /// <summary>Parent transform under which life-icon GameObjects are instantiated.</summary>
+    /// <summary>Parent transform where life-icon GameObjects are instantiated.</summary>
     public Transform livesContainer;
+
+    [Header("Game HUD Panel")]
+    /// <summary>
+    /// HUD panel rendered on Display 1 (Runners / single-screen fallback).
+    /// Its <c>Canvas.targetDisplay</c> is set automatically in
+    /// <see cref="ShowGameUI"/>.
+    /// </summary>
+    public GameObject gameHudPanel;
+
+    /// <summary>
+    /// Optional second HUD panel rendered on Display 2 (Catchers).
+    /// Only needed for local split-screen setups where runners and catchers
+    /// share the same machine.  Leave empty for online-only play.
+    /// </summary>
+    public GameObject gameHudPanelScreen2;
 
     // ====================================================================
     // Inspector – Dash UI
     // ====================================================================
 
     [Header("Dash UI")]
-    /// <summary>Root container for all Dash-related UI elements.</summary>
+    /// <summary>Root container for Dash UI elements.</summary>
     public GameObject dashUIContainer;
 
-    /// <summary>Icon or button shown when the dash ability is ready to use.</summary>
+    /// <summary>Icon shown when the dash is ready.</summary>
     public GameObject dashIconAvailable;
 
-    /// <summary>Panel shown while the dash ability is on cooldown.</summary>
+    /// <summary>Panel shown while the dash is on cooldown.</summary>
     public GameObject dashCooldownDisplay;
 
-    /// <summary>Text label inside <see cref="dashCooldownDisplay"/> showing remaining seconds.</summary>
+    /// <summary>Label showing remaining dash cooldown in seconds.</summary>
     public TextMeshProUGUI dashCooldownText;
 
     // ====================================================================
@@ -64,153 +78,98 @@ public class UIManager : MonoBehaviour
     // ====================================================================
 
     [Header("Attack UI")]
-    /// <summary>Root container for all Attack-related UI elements.</summary>
+    /// <summary>Root container for Attack UI elements.</summary>
     public GameObject attackUIContainer;
 
-    /// <summary>Icon or button shown when the attack ability is ready to use.</summary>
+    /// <summary>Icon shown when the attack is ready.</summary>
     public GameObject attackIconAvailable;
 
-    /// <summary>Panel shown while the attack ability is on cooldown.</summary>
+    /// <summary>Panel shown while the attack is on cooldown.</summary>
     public GameObject attackCooldownDisplay;
 
-    /// <summary>Text label inside <see cref="attackCooldownDisplay"/> showing remaining seconds.</summary>
+    /// <summary>Label showing remaining attack cooldown in seconds.</summary>
     public TextMeshProUGUI attackCooldownText;
 
+    [Header("Mobile")]
     /// <summary>Parent container for the on-screen virtual joystick (mobile only).</summary>
     public GameObject virtualJoystickContainer;
 
-    // ====================================================================
-    // Inspector – Lobby UI
-    // ====================================================================
-
-    [Header("Lobby UI in Game Scene")]
-    /// <summary>Panel shown in the game scene while players are waiting for the match to start.</summary>
-    public GameObject lobbyPanel;
-
-    /// <summary>Button that the host clicks to start the match.</summary>
-    public Button startMatchButton;
-
-    /// <summary>Button that disconnects the local client and returns to the main menu.</summary>
-    public Button disconnectButton;
-
-    /// <summary>Label displaying the current lobby join code.</summary>
+    [Header("Session Info")]
+    /// <summary>
+    /// Displays the lobby join code inside the game scene so players can share
+    /// it with latecomers.  Populated by <see cref="ShowGameUI"/>.
+    /// </summary>
     public TextMeshProUGUI lobbyCodeText;
 
-    /// <summary>Label displaying the current connected player count (e.g. "Players: 2/6").</summary>
-    public TextMeshProUGUI playerCountText;
+    [Header("Countdown")]
+    /// <summary>Fullscreen overlay shown during the pre-game countdown.</summary>
+    public GameObject countdownPanel;
 
-    /// <summary>Label displaying the name of the selected game stage/map.</summary>
-    public TextMeshProUGUI stageNameText;
+    /// <summary>Label that shows "3", "2", "1", or "Go!".</summary>
+    public TextMeshProUGUI countdownText;
 
-    // ====================================================================
-    // Inspector – Additional Panels
-    // ====================================================================
+    [Header("Pause Menu")]
+    /// <summary>Root panel for the pause menu.</summary>
+    public GameObject pausePanel;
 
-    [Header("Additional UI Panels")]
-    /// <summary>Panel shown when the local client is on the main-menu scene.</summary>
-    public GameObject mainMenuPanel;
+    /// <summary>Restart button — only visible for the host.</summary>
+    public UnityEngine.UI.Button restartButton;
 
-    /// <summary>Panel shown during active gameplay (score, timer, lives).</summary>
-    public GameObject gameHudPanel;
+    [Header("Disconnect Message")]
+    /// <summary>Panel shown briefly when another player leaves mid-game.</summary>
+    public GameObject playerLeftPanel;
+
+    /// <summary>Text inside <see cref="playerLeftPanel"/>.</summary>
+    public TextMeshProUGUI playerLeftText;
 
     // ====================================================================
     // Private
     // ====================================================================
 
-    private GameManager _gameManager;
-
-    /// <summary>Tracks the current high-level UI state to avoid redundant panel toggling.</summary>
-    private enum UIState { MainMenu, Lobby, Game }
-    private UIState _currentState = UIState.MainMenu;
-
-    private bool _isHost = false;
-    private int _lastPlayerCount = 0;
-
-    /// <summary>Reference to the local Runner; set by <see cref="SetLocalPlayerMovement"/>.</summary>
     private PlayerMovement _localRunner;
-
-    /// <summary>Reference to the local Guard; set by <see cref="SetLocalCatcher"/>.</summary>
     private Guard _localCatcher;
+    private bool _isPaused;
+    private GameManager _gm;
 
-    /// <summary>Pool of instantiated life-icon GameObjects, rebuilt by <see cref="UpdateLivesUI"/>.</summary>
-    private List<GameObject> lifeIcons = new List<GameObject>();
+    private readonly List<GameObject> _lifeIcons = new List<GameObject>();
 
     // ====================================================================
     // Unity Lifecycle
     // ====================================================================
 
-    void Awake()
+    private void Awake()
     {
-        if (Instance != null && Instance != this)
-        {
-            Destroy(gameObject);
-        }
-        else
-        {
-            Instance = this;
-        }
+        if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+        Instance = this;
     }
 
-    void Start()
+    private void Start()
     {
 #if UNITY_ANDROID || UNITY_IOS
-        // Force landscape orientation on mobile devices.
         Screen.orientation = ScreenOrientation.LandscapeLeft;
 #endif
-        InitializeUI();
-
-        Invoke(nameof(DelayedUIUpdate), 1.5f);
-
-        SceneManager.sceneLoaded += OnSceneLoaded;
-
-        lobbyPanel.SetActive(true);
-
-        if (startMatchButton != null)
-        {
-            startMatchButton.onClick.RemoveAllListeners();
-            startMatchButton.onClick.AddListener(OnStartMatchButtonClicked);
-        }
-
-        if (disconnectButton != null)
-        {
-            disconnectButton.onClick.RemoveAllListeners();
-            disconnectButton.onClick.AddListener(OnDisconnectButtonClicked);
-        }
-
-        if (NetworkConnectionManager.Instance != null)
-        {
-            NetworkConnectionManager.Instance.totalPlayers.OnValueChanged += (prev, curr) => RefreshPlayerCounter();
-            NetworkConnectionManager.Instance.totalGuards.OnValueChanged += (prev, curr) => RefreshPlayerCounter();
-        }
+        // Start with HUD hidden; shown when the game actually starts.
+        if (gameHudPanel != null) gameHudPanel.SetActive(false);
+        if (gameHudPanelScreen2 != null) gameHudPanelScreen2.SetActive(false);
+        if (virtualJoystickContainer != null) virtualJoystickContainer.SetActive(false);
+        EnsureOverlayCanvas(countdownPanel, sortingOrder: 200);
+        EnsureOverlayCanvas(playerLeftPanel, sortingOrder: 150);
+        if (countdownPanel != null) countdownPanel.SetActive(false);
+        if (pausePanel != null) pausePanel.SetActive(false);
+        if (playerLeftPanel != null) playerLeftPanel.SetActive(false);
     }
 
-    void Update()
+    private void OnEnable()
     {
-        // Detect host-status changes and refresh the Start Match button accordingly.
-        if (NetworkManager.Singleton != null)
-        {
-            bool currentIsHost = NetworkManager.Singleton.IsHost;
-            if (currentIsHost != _isHost)
-            {
-                _isHost = currentIsHost;
-                UpdateStartMatchButton();
-            }
-        }
+        var gm = FindAnyObjectByType<GameManager>();
+        if (gm != null) UpdateLivesUI(gm.playerLives.Value);
+    }
 
+    private void Update()
+    {
         UpdateDashUI();
         UpdateAttackUI();
-    }
-
-    void OnEnable()
-    {
-        _gameManager = FindAnyObjectByType<GameManager>();
-        if (_gameManager != null)
-            UpdateLivesUI(_gameManager.playerLives.Value);
-    }
-
-    void OnDestroy()
-    {
-        SceneManager.sceneLoaded -= OnSceneLoaded;
+        CheckPauseInput();
     }
 
     // ====================================================================
@@ -218,491 +177,143 @@ public class UIManager : MonoBehaviour
     // ====================================================================
 
     /// <summary>
-    /// Stores the local <see cref="PlayerMovement"/> reference so the Dash UI
-    /// can read its cooldown NetworkVariable each frame.
+    /// Stores the local runner reference so the Dash UI can read its cooldown.
     /// Called by <see cref="PlayerMovement.OnNetworkSpawn"/> on the owning client.
     /// </summary>
-    public void SetLocalPlayerMovement(PlayerMovement playerMovement)
-    {
-        _localRunner = playerMovement;
-    }
+    public void SetLocalPlayerMovement(PlayerMovement pm) => _localRunner = pm;
 
     /// <summary>
-    /// Stores the local <see cref="Guard"/> reference so the Attack UI
-    /// can read its cooldown NetworkVariable each frame.
+    /// Stores the local guard reference so the Attack UI can read its cooldown.
     /// Called by <see cref="Guard.OnNetworkSpawn"/> on the owning client.
     /// </summary>
-    public void SetLocalCatcher(Guard guard)
-    {
-        _localCatcher = guard;
-    }
-
-    // ====================================================================
-    // Private – Initialisation
-    // ====================================================================
-
-    /// <summary>
-    /// Sets up the initial UI state based on the currently active scene and
-    /// wires the disconnect button listener.
-    /// </summary>
-    private void InitializeUI()
-    {
-        string currentScene = SceneManager.GetActiveScene().name;
-
-        if (currentScene == "MenuScene")
-            ShowMainMenuUI();
-        else
-            ShowGameUI();
-
-        if (disconnectButton != null)
-        {
-            disconnectButton.onClick.RemoveAllListeners();
-            disconnectButton.onClick.AddListener(OnDisconnectButtonClicked);
-        }
-
-        UpdateLobbyCode("---");
-        RefreshPlayerCounter();
-    }
-
-    /// <summary>
-    /// Runs 1.5 seconds after <c>Start</c> to update the Start Match button and
-    /// the lobby code label once the network has had time to initialise.
-    /// </summary>
-    private void DelayedUIUpdate()
-    {
-        UpdateStartMatchButton();
-
-        var connectionManager = FindAnyObjectByType<NetworkConnectionManager>();
-        if (connectionManager != null && !string.IsNullOrEmpty(connectionManager.LobbyCode))
-            UpdateLobbyCode(connectionManager.LobbyCode);
-    }
-
-    // ====================================================================
-    // Private – Player Counter
-    // ====================================================================
-
-    /// <summary>
-    /// Reads the current runner and guard counts from <see cref="NetworkConnectionManager"/>
-    /// and updates the player-count label.
-    /// Falls back to <see cref="GameSettings.LocalPlayerCount"/> when the connection
-    /// manager is not yet spawned on the network.
-    /// </summary>
-    private void RefreshPlayerCounter()
-    {
-        var conn = NetworkConnectionManager.Instance;
-        if (conn != null && conn.IsSpawned)
-        {
-            int totalRunners = conn.totalPlayers.Value;
-            int totalCatchers = conn.totalGuards.Value;
-            int total = totalRunners + totalCatchers;
-
-            Debug.Log($"RefreshPlayerCounter: runners={totalRunners}, catchers={totalCatchers}, total={total}");
-
-            UpdatePlayerCounter(total, NetworkConnectionManager.MAX_TOTAL_PLAYERS);
-        }
-        else
-        {
-            Debug.Log("RefreshPlayerCounter: ConnectionManager not available yet.");
-            UpdatePlayerCounter(GameSettings.LocalPlayerCount, NetworkConnectionManager.MAX_TOTAL_PLAYERS);
-        }
-    }
-
-    // ====================================================================
-    // Private – Start Match Button
-    // ====================================================================
-
-    /// <summary>
-    /// Shows or hides the Start Match button depending on whether the local
-    /// client is the host, and refreshes its interactable state.
-    /// </summary>
-    private void UpdateStartMatchButton()
-    {
-        if (startMatchButton == null)
-        {
-            Debug.LogWarning("StartMatchButton is not assigned in the Inspector!");
-            return;
-        }
-
-        bool isHost = NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost;
-
-        startMatchButton.gameObject.SetActive(isHost);
-
-        if (isHost)
-        {
-            startMatchButton.onClick.RemoveAllListeners();
-            startMatchButton.onClick.AddListener(OnStartMatchButtonClicked);
-
-            // The host can always start the match, even when playing alone.
-            startMatchButton.interactable = true;
-
-            var connectionManager = FindAnyObjectByType<NetworkConnectionManager>();
-            if (connectionManager != null && connectionManager.IsSpawned)
-            {
-                int totalPlayers = connectionManager.totalPlayers.Value + connectionManager.totalGuards.Value;
-                if (totalPlayers != _lastPlayerCount)
-                    _lastPlayerCount = totalPlayers;
-            }
-        }
-    }
+    public void SetLocalCatcher(Guard guard) => _localCatcher = guard;
 
     // ====================================================================
     // Public – Panel Control
     // ====================================================================
 
     /// <summary>
-    /// Switches to the main-menu panel layout: hides the lobby and HUD panels,
-    /// shows <see cref="mainMenuPanel"/>.
-    /// </summary>
-    public void ShowMainMenuUI()
-    {
-        _currentState = UIState.MainMenu;
-        if (lobbyPanel != null) lobbyPanel.SetActive(false);
-        if (mainMenuPanel != null) mainMenuPanel.SetActive(true);
-        if (gameHudPanel != null) gameHudPanel.SetActive(false);
-    }
-
-    /// <summary>
-    /// Switches to the in-lobby layout: shows <see cref="lobbyPanel"/>,
-    /// hides other panels, and refreshes the lobby code and Start Match button.
-    /// </summary>
-    /// <param name="isHost">Whether the local client is the session host.</param>
-    /// <param name="lobbyCode">The human-readable join code to display.</param>
-    public void ShowLobbyUI(bool isHost, string lobbyCode)
-    {
-        _currentState = UIState.Lobby;
-
-        if (lobbyPanel != null)
-        {
-            lobbyPanel.SetActive(true);
-            Debug.Log("Lobby panel activated.");
-        }
-        else
-        {
-            Debug.LogError("lobbyPanel is null! Check the Inspector reference.");
-        }
-
-        if (mainMenuPanel != null) mainMenuPanel.SetActive(false);
-        if (gameHudPanel != null) gameHudPanel.SetActive(false);
-
-        UpdateLobbyCode(lobbyCode);
-        UpdateStartMatchButton();
-    }
-
-    /// <summary>
-    /// Switches to the in-game HUD layout: shows <see cref="gameHudPanel"/>,
-    /// hides the lobby and main-menu panels.
+    /// Shows the game HUD panel(s) and routes each to the correct physical
+    /// display.
+    ///
+    /// <b>Display routing:</b>
+    /// <list type="bullet">
+    ///   <item><see cref="gameHudPanel"/> → Display 1 when the local player is a
+    ///         Runner, Display 2 when the local player is a Catcher and no
+    ///         <see cref="gameHudPanelScreen2"/> is assigned.</item>
+    ///   <item><see cref="gameHudPanelScreen2"/> → Display 2 (for local
+    ///         split-screen machines that have both Runners on Screen 1 and
+    ///         Catchers on Screen 2).</item>
+    /// </list>
+    ///
+    /// Also initialises all HUD labels with current server values so join
+    /// clients see correct data immediately.
     /// </summary>
     public void ShowGameUI()
     {
-        _currentState = UIState.Game;
-        if (lobbyPanel != null) lobbyPanel.SetActive(false);
-        if (mainMenuPanel != null) mainMenuPanel.SetActive(false);
-        if (gameHudPanel != null) gameHudPanel.SetActive(true);
-    }
+        bool localIsCatcher = IsLocalPlayerCatcher();
 
-    /// <summary>
-    /// Reacts to Unity scene-load events.
-    /// Shows the main-menu UI when the <c>MenuScene</c> is loaded;
-    /// shows the game HUD for any other scene.
-    /// </summary>
-    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
-    {
-        if (scene.name == "MenuScene")
-            ShowMainMenuUI();
-        else
-            ShowGameUI();
-    }
-
-    /// <summary>
-    /// Displays a transient status message inside <see cref="lobbyPanel"/> by searching
-    /// its children for a <see cref="TextMeshProUGUI"/> whose name contains "Status"
-    /// or "Message".
-    /// </summary>
-    public void ShowLoadingMessage(string message)
-    {
-        if (lobbyPanel != null)
+        // ── Main HUD panel ────────────────────────────────────────────
+        if (gameHudPanel != null)
         {
-            TextMeshProUGUI[] texts = lobbyPanel.GetComponentsInChildren<TextMeshProUGUI>();
-            foreach (var text in texts)
-            {
-                if (text.name.Contains("Status") || text.name.Contains("Message"))
-                {
-                    text.text = message;
-                    break;
-                }
-            }
+            // Determine display target:
+            // – Dual-screen local: Screen2 panel handles catchers, main stays on Display 1.
+            // – Online / single-screen: route based on local role.
+            int mainDisplay = (gameHudPanelScreen2 != null || !localIsCatcher)
+                ? MultiScreenManager.RunnerDisplayIndex
+                : MultiScreenManager.CatcherDisplayIndex;
+
+            RouteCanvasToDisplay(gameHudPanel, mainDisplay);
+            gameHudPanel.SetActive(true);
+        }
+
+        // ── Screen 2 HUD panel (local dual-screen only) ───────────────
+        if (gameHudPanelScreen2 != null)
+        {
+            RouteCanvasToDisplay(gameHudPanelScreen2, MultiScreenManager.CatcherDisplayIndex);
+            gameHudPanelScreen2.SetActive(true);
+        }
+
+        // ── Hide any surviving lobby UI ───────────────────────────────
+        var lobby = FindAnyObjectByType<InteractiveLobbyPanel>(FindObjectsInactive.Include);
+        if (lobby != null) lobby.gameObject.SetActive(false);
+
+        // ── Initialise HUD labels from current server values ──────────
+        // OnValueChanged only fires on changes; join clients need current values.
+        _gm = FindAnyObjectByType<GameManager>();
+        if (_gm != null)
+        {
+            UpdateScoreText(_gm.score.Value);
+            UpdateTimerText(_gm.gameTimer.Value);
+            UpdateLivesUI(_gm.playerLives.Value);
+        }
+
+        // ── Lobby code ────────────────────────────────────────────────
+        if (lobbyCodeText != null)
+        {
+            var cm = NetworkConnectionManager.Instance;
+            string code = cm != null ? cm.LobbyCode : string.Empty;
+            lobbyCodeText.text = string.IsNullOrEmpty(code) ? "Local" : $"Code: {code}";
         }
     }
 
     /// <summary>
-    /// Called by <see cref="GameManager"/> when <c>gameStarted</c> changes.
-    /// Hides the lobby panel when the game starts and shows the virtual joystick.
+    /// Called on <b>every client</b> when <see cref="GameManager.gameStarted"/>
+    /// changes.  Shows the HUD and enables the virtual joystick.
+    /// This is the primary path that ensures join clients see their UI.
     /// </summary>
-    /// <param name="started"><c>true</c> when the match begins; <c>false</c> when returning to lobby.</param>
     public void HandleGameStart(bool started)
     {
-        if (lobbyPanel != null)
-            lobbyPanel.SetActive(!started);
-
-        if (startMatchButton != null)
-            startMatchButton.interactable = !started;
+        if (started) ShowGameUI();
 
         if (virtualJoystickContainer != null)
             virtualJoystickContainer.SetActive(started);
     }
 
     // ====================================================================
-    // Private – Button Callbacks
+    // Public – HUD Updates
     // ====================================================================
 
-    /// <summary>
-    /// Called when the host clicks the Start Match button.
-    /// Delegates to <see cref="GameManager.SpawnAllPlayersAndStartGame"/> and
-    /// transitions the UI to the game HUD.
-    /// </summary>
-    private void OnStartMatchButtonClicked()
-    {
-        if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost)
-        {
-            if (_gameManager == null)
-                _gameManager = FindAnyObjectByType<GameManager>();
-
-            if (_gameManager != null)
-            {
-                _gameManager.SpawnAllPlayersAndStartGame();
-                ShowGameUI();
-            }
-            else
-            {
-                Debug.LogError("GameManager not found. Cannot start the match.");
-            }
-        }
-    }
-
-    /// <summary>
-    /// Called when the Disconnect button is clicked.
-    /// Delegates to <see cref="NetworkConnectionManager.ForceCleanDisconnect"/>
-    /// or falls back to loading <c>MenuScene</c> directly.
-    /// </summary>
-    public void OnDisconnectButtonClicked()
-    {
-        var connectionManager = FindAnyObjectByType<NetworkConnectionManager>();
-        if (connectionManager != null)
-            connectionManager.ForceCleanDisconnect();
-        else
-            SceneManager.LoadScene("MenuScene");
-    }
-
-    /// <summary>
-    /// Called by the Restart button on the end-game panel.
-    /// Asks the server to reset the game via <see cref="GameManager.ResetGameServerRpc"/>.
-    /// </summary>
-    public void OnRestartGameButtonClicked()
-    {
-        var gameManager = FindAnyObjectByType<GameManager>();
-        if (gameManager != null && NetworkManager.Singleton.IsHost)
-            gameManager.ResetGameServerRpc();
-    }
-
-    // ====================================================================
-    // Public – HUD Text Updates
-    // ====================================================================
-
-    /// <summary>
-    /// Updates the score label to show <paramref name="newScore"/> against the
-    /// target defined in <see cref="GameManager.scoreToWin"/>.
-    /// </summary>
+    /// <summary>Updates the score label (e.g. "Coins: 5 / 20").</summary>
     public void UpdateScoreText(int newScore)
     {
-        if (scoreText != null)
-        {
-            var gameManager = FindAnyObjectByType<GameManager>();
-            int targetScore = gameManager != null ? gameManager.scoreToWin : 10;
-            scoreText.text = $"Coins: {newScore} / {targetScore}";
-        }
+        if (scoreText == null) return;
+        var gm = FindAnyObjectByType<GameManager>();
+        int target = gm != null ? gm.scoreToWin : 10;
+        scoreText.text = $"Coins: {newScore} / {target}";
     }
 
-    /// <summary>
-    /// Updates the timer label, formatting <paramref name="newTime"/> seconds
-    /// as <c>MM:SS</c>.
-    /// </summary>
+    /// <summary>Updates the timer label in MM:SS format.</summary>
     public void UpdateTimerText(float newTime)
     {
-        if (timerText != null)
-        {
-            int minutes = Mathf.FloorToInt(newTime / 60f);
-            int seconds = Mathf.FloorToInt(newTime - minutes * 60);
-            timerText.text = string.Format("{0:00}:{1:00}", minutes, seconds);
-        }
+        if (timerText == null) return;
+        int minutes = Mathf.FloorToInt(newTime / 60f);
+        int seconds = Mathf.FloorToInt(newTime % 60f);
+        timerText.text = $"{minutes:00}:{seconds:00}";
     }
 
-    /// <summary>Updates the lobby-code label to display <paramref name="code"/>.</summary>
-    public void UpdateLobbyCode(string code)
-    {
-        if (lobbyCodeText != null)
-            lobbyCodeText.text = $"Lobby: {code}";
-    }
-
-    /// <summary>
-    /// Updates the player-count label and keeps the Start Match button interactable
-    /// for the host regardless of the current count.
-    /// </summary>
-    /// <param name="current">Number of currently connected players.</param>
-    /// <param name="max">Maximum allowed players in the session.</param>
-    public void UpdatePlayerCounter(int current, int max)
-    {
-        if (playerCountText != null)
-        {
-            playerCountText.text = $"Players: {current}/{max}";
-            Debug.Log($"UpdatePlayerCounter called: current={current}, max={max}");
-        }
-
-        if (startMatchButton != null
-            && NetworkManager.Singleton != null
-            && NetworkManager.Singleton.IsHost)
-        {
-            startMatchButton.interactable = true;
-
-            if (current != _lastPlayerCount)
-                _lastPlayerCount = current;
-        }
-    }
-
-    /// <summary>
-    /// Destroys all existing life-icon GameObjects and instantiates a new row of
-    /// <paramref name="currentLives"/> icons inside <see cref="livesContainer"/>.
-    /// </summary>
+    /// <summary>Rebuilds the life-icon row to show <paramref name="currentLives"/> icons.</summary>
     public void UpdateLivesUI(int currentLives)
     {
-        foreach (var icon in lifeIcons)
-            Destroy(icon);
-        lifeIcons.Clear();
+        foreach (var icon in _lifeIcons) Destroy(icon);
+        _lifeIcons.Clear();
 
         if (livesContainer == null || lifeIconSprite == null) return;
 
         for (int i = 0; i < currentLives; i++)
         {
-            GameObject newIconGO = new GameObject("LifeIcon", typeof(Image));
-            newIconGO.transform.SetParent(livesContainer, false);
+            var go = new GameObject("LifeIcon", typeof(Image));
+            go.transform.SetParent(livesContainer, false);
+            go.GetComponent<Image>().sprite = lifeIconSprite;
 
-            Image iconImage = newIconGO.GetComponent<Image>();
-            iconImage.sprite = lifeIconSprite;
+            var rt = go.GetComponent<RectTransform>();
+            rt.sizeDelta = new Vector2(lifeIconWidth, lifeIconWidth);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchorMin = new Vector2(0f, 0.5f);
+            rt.anchorMax = new Vector2(0f, 0.5f);
+            rt.anchoredPosition = new Vector2(i * (lifeIconWidth + 10f) + lifeIconWidth * 0.5f, 0f);
 
-            RectTransform iconRectTransform = newIconGO.GetComponent<RectTransform>();
-            if (iconRectTransform != null)
-            {
-                iconRectTransform.sizeDelta = new Vector2(lifeIconWidth, lifeIconWidth);
-                float xPos = i * (lifeIconWidth + 10);
-                iconRectTransform.pivot = new Vector2(0.5f, 0.5f);
-                iconRectTransform.anchorMin = new Vector2(0f, 0.5f);
-                iconRectTransform.anchorMax = new Vector2(0f, 0.5f);
-                iconRectTransform.anchoredPosition = new Vector2(xPos + lifeIconWidth / 2, 0);
-            }
-
-            lifeIcons.Add(newIconGO);
-        }
-    }
-
-    // ====================================================================
-    // Private – Cooldown UI
-    // ====================================================================
-
-    /// <summary>
-    /// Updates the Dash cooldown UI every frame by reading
-    /// <see cref="PlayerMovement.DashCooldownRemaining"/> from the local runner.
-    /// Lazily locates the local runner on the first call if the reference is null.
-    /// Hides the container entirely when no local runner exists or the character
-    /// is not in the Runner role.
-    /// </summary>
-    private void UpdateDashUI()
-    {
-        if (_localRunner == null)
-        {
-            PlayerMovement[] allPlayers = FindObjectsByType<PlayerMovement>(FindObjectsInactive.Include);
-
-            foreach (PlayerMovement player in allPlayers)
-            {
-                if (player.IsOwner && player.IsRunner.Value)
-                {
-                    _localRunner = player;
-                    break;
-                }
-            }
-
-            if (_localRunner == null)
-            {
-                if (dashUIContainer != null) dashUIContainer.SetActive(false);
-                return;
-            }
-        }
-
-        if (!_localRunner.IsRunner.Value)
-        {
-            if (dashUIContainer != null) dashUIContainer.SetActive(false);
-            return;
-        }
-
-        if (dashUIContainer != null) dashUIContainer.SetActive(true);
-
-        float cooldown = _localRunner.DashCooldownRemaining.Value;
-
-        if (cooldown <= 0f)
-        {
-            if (dashIconAvailable != null) dashIconAvailable.SetActive(true);
-            if (dashCooldownDisplay != null) dashCooldownDisplay.SetActive(false);
-        }
-        else
-        {
-            if (dashIconAvailable != null) dashIconAvailable.SetActive(false);
-            if (dashCooldownDisplay != null) dashCooldownDisplay.SetActive(true);
-            if (dashCooldownText != null) dashCooldownText.text = cooldown.ToString("F1");
-        }
-    }
-
-    /// <summary>
-    /// Updates the Attack cooldown UI every frame by reading
-    /// <see cref="Guard.AttackCooldownRemaining"/> from the local guard.
-    /// Lazily locates the local guard on the first call if the reference is null.
-    /// Hides the container entirely when no local guard exists.
-    /// </summary>
-    private void UpdateAttackUI()
-    {
-        // Se não temos uma referência ao guard local
-        if (_localCatcher == null)
-        {
-            // Tenta encontrar o guard local (Owner)
-            Guard[] allGuards = FindObjectsByType<Guard>(FindObjectsInactive.Include);
-            foreach (Guard guard in allGuards)
-            {
-                if (guard.IsOwner)
-                {
-                    _localCatcher = guard;
-                    break;
-                }
-            }
-
-            if (_localCatcher == null)
-            {
-                // Se ainda não encontrou, desativa a UI
-                if (attackUIContainer != null) attackUIContainer.SetActive(false);
-                return;
-            }
-        }
-
-        if (attackUIContainer != null) attackUIContainer.SetActive(true);
-
-        float cooldown = _localCatcher.AttackCooldownRemaining.Value;
-
-        if (cooldown <= 0f)
-        {
-            if (attackIconAvailable != null) attackIconAvailable.SetActive(true);
-            if (attackCooldownDisplay != null) attackCooldownDisplay.SetActive(false);
-        }
-        else
-        {
-            if (attackIconAvailable != null) attackIconAvailable.SetActive(false);
-            if (attackCooldownDisplay != null) attackCooldownDisplay.SetActive(true);
-            if (attackCooldownText != null) attackCooldownText.text = cooldown.ToString("F1");
+            _lifeIcons.Add(go);
         }
     }
 
@@ -710,103 +321,321 @@ public class UIManager : MonoBehaviour
     // Public – End-Game Panel
     // ====================================================================
 
-    /// <summary>
-    /// Populates and shows the end-game panel using a rich <see cref="EndGameResult"/>
-    /// struct, setting the victory/defeat text, description, and background colour.
-    /// </summary>
-    /// <param name="result">Struct containing win/loss state and team name strings.</param>
+    /// <summary>Shows the end-game panel with a rich result struct.</summary>
     public void ShowEndGamePanel(EndGameResult result)
     {
         if (endGamePanel == null) return;
-
         endGamePanel.SetActive(true);
 
-        Text victoryText = endGamePanel.transform.Find("VictoryText")?.GetComponent<Text>();
-        Text messageText = endGamePanel.transform.Find("MessageText")?.GetComponent<Text>();
-        Text descriptionText = endGamePanel.transform.Find("DescriptionText")?.GetComponent<Text>();
+        var victoryText = endGamePanel.transform.Find("VictoryText")?.GetComponent<Text>();
+        var messageText = endGamePanel.transform.Find("MessageText")?.GetComponent<Text>();
+        var descriptionText = endGamePanel.transform.Find("DescriptionText")?.GetComponent<Text>();
 
         if (victoryText != null)
         {
             victoryText.text = result.didLocalPlayerWin ? "VICTORY!" : "DEFEAT!";
             victoryText.color = result.didLocalPlayerWin ? Color.green : Color.red;
         }
-
-        if (messageText != null)
-            messageText.text = result.message;
-
+        if (messageText != null) messageText.text = result.message;
         if (descriptionText != null)
-        {
             descriptionText.text = result.didLocalPlayerWin
                 ? $"Congratulations! The {result.winningTeam} have won!"
                 : $"Better luck next time! The {result.losingTeam} have lost!";
-        }
 
-        Image backgroundImage = endGamePanel.GetComponent<Image>();
-        if (backgroundImage != null)
-        {
-            backgroundImage.color = result.didLocalPlayerWin
-                ? new Color(0.1f, 0.5f, 0.1f, 0.8f)   // Dark green – victory.
-                : new Color(0.5f, 0.1f, 0.1f, 0.8f);  // Dark red   – defeat.
-        }
+        var bg = endGamePanel.GetComponent<Image>();
+        if (bg != null)
+            bg.color = result.didLocalPlayerWin
+                ? new Color(0.1f, 0.5f, 0.1f, 0.8f)
+                : new Color(0.5f, 0.1f, 0.1f, 0.8f);
     }
 
-    /// <summary>
-    /// Activates the end-game panel and displays a plain string <paramref name="message"/>.
-    /// Uses <see cref="TextMeshProUGUI"/> if available, falling back to legacy <see cref="Text"/>.
-    /// Colours the text green when the message contains "Victory", red otherwise.
-    /// </summary>
+    /// <summary>Shows the end-game panel with a plain message string.</summary>
     public void ShowSimpleEndGame(string message)
     {
-        if (endGamePanel != null)
-        {
-            endGamePanel.SetActive(true);
+        if (endGamePanel == null) return;
+        endGamePanel.SetActive(true);
 
-            TextMeshProUGUI textMesh = endGamePanel.GetComponentInChildren<TextMeshProUGUI>();
-            if (textMesh != null)
-            {
-                textMesh.text = message;
-                textMesh.color = message.Contains("Victory") ? Color.green : Color.red;
-            }
-            else
-            {
-                Text legacyText = endGamePanel.GetComponentInChildren<Text>();
-                if (legacyText != null)
-                {
-                    legacyText.text = message;
-                    legacyText.color = message.Contains("Victory") ? Color.green : Color.red;
-                }
-            }
+        var tmp = endGamePanel.GetComponentInChildren<TextMeshProUGUI>();
+        if (tmp != null)
+        {
+            tmp.text = message;
+            tmp.color = message.Contains("Victory") ? Color.green : Color.red;
+            return;
+        }
+
+        var legacy = endGamePanel.GetComponentInChildren<Text>();
+        if (legacy != null)
+        {
+            legacy.text = message;
+            legacy.color = message.Contains("Victory") ? Color.green : Color.red;
         }
     }
 
     /// <summary>Hides the end-game panel.</summary>
     public void HideEndGamePanel()
     {
-        if (endGamePanel != null)
-            endGamePanel.SetActive(false);
+        if (endGamePanel != null) endGamePanel.SetActive(false);
     }
 
-    // ====================================================================
-    // Public – Quit
-    // ====================================================================
-
-    /// <summary>
-    /// Shuts down the network connection (if active) then quits the application.
-    /// In the Unity Editor, stops Play Mode instead.
-    /// </summary>
+    /// <summary>Quits the application.</summary>
     public void QuitGame()
     {
-        var connectionManager = FindAnyObjectByType<NetworkConnectionManager>();
-
-        if (connectionManager != null && NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening)
-        {
-            connectionManager.Disconnect(false);
-        }
-
         Application.Quit();
-
 #if UNITY_EDITOR
         UnityEditor.EditorApplication.isPlaying = false;
 #endif
     }
+
+    // ====================================================================
+    // Private – Cooldown UI
+    // ====================================================================
+
+    private void UpdateDashUI()
+    {
+        if (_localRunner == null)
+        {
+            foreach (var pm in FindObjectsByType<PlayerMovement>(FindObjectsInactive.Include))
+            {
+                if (pm.IsOwner && pm.IsRunner.Value) { _localRunner = pm; break; }
+            }
+
+            if (_localRunner == null)
+            { if (dashUIContainer != null) dashUIContainer.SetActive(false); return; }
+        }
+
+        if (!_localRunner.IsRunner.Value)
+        { if (dashUIContainer != null) dashUIContainer.SetActive(false); return; }
+
+        if (dashUIContainer != null) dashUIContainer.SetActive(true);
+
+        float cd = _localRunner.DashCooldownRemaining.Value;
+        bool ready = cd <= 0f;
+        if (dashIconAvailable != null) dashIconAvailable.SetActive(ready);
+        if (dashCooldownDisplay != null) dashCooldownDisplay.SetActive(!ready);
+        if (!ready && dashCooldownText != null) dashCooldownText.text = cd.ToString("F1");
+    }
+
+    private void UpdateAttackUI()
+    {
+        if (_localCatcher == null)
+        {
+            foreach (var g in FindObjectsByType<Guard>(FindObjectsInactive.Include))
+            {
+                if (g.IsOwner) { _localCatcher = g; break; }
+            }
+
+            if (_localCatcher == null)
+            { if (attackUIContainer != null) attackUIContainer.SetActive(false); return; }
+        }
+
+        if (attackUIContainer != null) attackUIContainer.SetActive(true);
+
+        float cd = _localCatcher.AttackCooldownRemaining.Value;
+        bool ready = cd <= 0f;
+        if (attackIconAvailable != null) attackIconAvailable.SetActive(ready);
+        if (attackCooldownDisplay != null) attackCooldownDisplay.SetActive(!ready);
+        if (!ready && attackCooldownText != null) attackCooldownText.text = cd.ToString("F1");
+    }
+
+    // ====================================================================
+    // Private – Display Helpers
+    // ====================================================================
+
+    /// <summary>
+    /// Sets <paramref name="panel"/>'s root <see cref="Canvas"/>
+    /// <c>targetDisplay</c> to <paramref name="displayIndex"/> so it renders
+    /// on the correct physical screen.
+    /// </summary>
+    private static void RouteCanvasToDisplay(GameObject panel, int displayIndex)
+    {
+        if (panel == null) return;
+        var canvas = panel.GetComponent<Canvas>();
+        if (canvas == null) canvas = panel.GetComponentInParent<Canvas>();
+        if (canvas != null) canvas.targetDisplay = displayIndex;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when the local client's slot assignment in
+    /// <see cref="GameSettings.ClientSlotAssignments"/> indicates a Catcher role.
+    /// Falls back to <see cref="GameSettings.IsCatcher"/> if no slot data exists.
+    /// </summary>
+    private static bool IsLocalPlayerCatcher()
+    {
+        if (NetworkManager.Singleton == null) return GameSettings.IsCatcher;
+
+        ulong localId = NetworkManager.Singleton.LocalClientId;
+
+        if (GameSettings.ClientSlotAssignments.TryGetValue(localId, out int slotIdx))
+            return slotIdx >= LobbyStateManager.RunnerSlotCount;
+
+        return GameSettings.IsCatcher;
+    }
+    // ====================================================================
+    // Countdown
+    // ====================================================================
+
+    /// <summary>
+    /// Displays the 3-2-1-Go sequence on top of the game scene.
+    /// Called on every client via <see cref="GameManager.StartCountdownClientRpc"/>.
+    /// </summary>
+    public void ShowCountdown() => StartCoroutine(CountdownCoroutine());
+
+    private System.Collections.IEnumerator CountdownCoroutine()
+    {
+        if (countdownPanel != null) countdownPanel.SetActive(true);
+
+        for (int i = 3; i >= 1; i--)
+        {
+            if (countdownText != null) countdownText.text = i.ToString();
+            yield return new WaitForSeconds(1f);
+        }
+
+        if (countdownText != null) countdownText.text = "Go!";
+        yield return new WaitForSeconds(0.7f);
+
+        if (countdownPanel != null) countdownPanel.SetActive(false);
+    }
+
+    // ====================================================================
+    // Pause Menu
+    // ====================================================================
+
+    /// <summary>
+    /// Called by <see cref="GameManager.OnIsPausedChanged"/> when the networked
+    /// pause state changes.  Shows or hides the pause panel accordingly.
+    /// </summary>
+    public void OnPauseStateChanged(bool paused)
+    {
+        _isPaused = paused;
+
+        if (pausePanel != null)
+        {
+            pausePanel.SetActive(paused);
+
+            if (paused && restartButton != null)
+                restartButton.gameObject.SetActive(
+                    Unity.Netcode.NetworkManager.Singleton != null &&
+                    Unity.Netcode.NetworkManager.Singleton.IsHost);
+        }
+    }
+
+    /// <summary>Resumes the game. Callable by any player.</summary>
+    public void OnResumeClicked()
+    {
+        _gm?.SetPausedServerRpc(false);
+    }
+
+    /// <summary>Restarts the round. Host only.</summary>
+    public void OnRestartClicked()
+    {
+        if (Unity.Netcode.NetworkManager.Singleton == null ||
+            !Unity.Netcode.NetworkManager.Singleton.IsHost) return;
+
+        _gm?.SetPausedServerRpc(false);
+        _gm?.ResetGameServerRpc();
+    }
+
+    /// <summary>
+    /// Returns to the main menu.
+    /// Host: disconnects the session (all clients return to menu).
+    /// Client: disconnects only this client.
+    /// </summary>
+    public void OnMenuClicked()
+    {
+        _gm?.SetPausedServerRpc(false);
+        NetworkConnectionManager.Instance?.Disconnect(goToMainMenu: true);
+    }
+
+    /// <summary>
+    /// Quits the application.
+    /// Host: disconnects the session first so clients are not left hanging.
+    /// Client: disconnects then quits.
+    /// </summary>
+    public void OnQuitClicked()
+    {
+        _gm?.SetPausedServerRpc(false);
+        NetworkConnectionManager.Instance?.Disconnect(goToMainMenu: false);
+        Application.Quit();
+#if UNITY_EDITOR
+        UnityEditor.EditorApplication.isPlaying = false;
+#endif
+    }
+
+    // ====================================================================
+    // Player Left Message
+    // ====================================================================
+
+    /// <summary>Shows a "A player has left the game" banner for 3 seconds.</summary>
+    public void ShowPlayerLeftMessage()
+    {
+        StopCoroutine(nameof(PlayerLeftCoroutine));
+        StartCoroutine(nameof(PlayerLeftCoroutine));
+    }
+
+    private System.Collections.IEnumerator PlayerLeftCoroutine()
+    {
+        if (playerLeftPanel != null)
+        {
+            if (playerLeftText != null)
+                playerLeftText.text = "A player has left the game.";
+            playerLeftPanel.SetActive(true);
+        }
+        yield return new WaitForSeconds(3f);
+        if (playerLeftPanel != null) playerLeftPanel.SetActive(false);
+    }
+
+    // ====================================================================
+    // Private – Pause Input
+    // ====================================================================
+
+    /// <summary>
+    /// Detects Escape (keyboard) or Start/Menu button (any gamepad) and
+    /// toggles the pause state via <see cref="GameManager.SetPausedServerRpc"/>.
+    /// Only active while the game is running.
+    /// </summary>
+    private void CheckPauseInput()
+    {
+        if (_gm == null || !_gm.gameStarted.Value) return;
+
+        bool pausePressed =
+            UnityEngine.InputSystem.Keyboard.current?.escapeKey.wasPressedThisFrame == true;
+
+        if (!pausePressed)
+        {
+            foreach (var gp in UnityEngine.InputSystem.Gamepad.all)
+            {
+                if (gp.startButton.wasPressedThisFrame)
+                {
+                    pausePressed = true;
+                    break;
+                }
+            }
+        }
+
+        if (pausePressed)
+            _gm.SetPausedServerRpc(!_isPaused);
+    }
+
+    // ====================================================================
+    // Private – Canvas Overlay Helpers
+    // ====================================================================
+
+    /// <summary>
+    /// Ensures <paramref name="panel"/> renders above all other canvases by
+    /// adding an <c>overrideSorting</c> Canvas component if one is not already
+    /// present at the panel's root.  Works whether the panel is a standalone
+    /// root Canvas or a child of another Canvas.
+    /// </summary>
+    private static void EnsureOverlayCanvas(GameObject panel, int sortingOrder)
+    {
+        if (panel == null) return;
+
+        var canvas = panel.GetComponent<Canvas>();
+        if (canvas == null)
+            canvas = panel.AddComponent<Canvas>();
+
+        canvas.overrideSorting = true;
+        canvas.sortingOrder = sortingOrder;
+    }
+
 }

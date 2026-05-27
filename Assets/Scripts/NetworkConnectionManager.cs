@@ -18,15 +18,28 @@ using UnityEngine.SceneManagement;
 public enum PlayerType { Runner, Catcher }
 
 /// <summary>
+/// Identifies whether a session is primarily local split-screen or online.
+/// Both modes create a Unity Relay allocation so online players can always join.
+/// </summary>
+public enum SessionMode { Local, Online }
+
+/// <summary>
 /// Manages the full connection lifecycle: Unity Services initialisation,
 /// Relay allocation, Lobby creation/heartbeat, connection approval,
 /// client tracking, and scene transitions.
+/// This object persists across scenes via <see cref="DontDestroyOnLoad"/>.
 /// </summary>
 public class NetworkConnectionManager : NetworkBehaviour
 {
     // ====================================================================
-    // Singleton
+    // Scene Name Constants
     // ====================================================================
+
+    /// <summary>Name of the lobby configuration scene (loaded after session creation).</summary>
+    public const string LobbySceneName = "LobbyScene";
+
+    /// <summary>Name of the main menu scene (returned to on disconnect).</summary>
+    public const string MenuSceneName = "MenuScene";
 
     /// <summary>Gets the singleton instance of <see cref="NetworkConnectionManager"/>.</summary>
     public static NetworkConnectionManager Instance { get; private set; }
@@ -67,9 +80,7 @@ public class NetworkConnectionManager : NetworkBehaviour
     /// <summary>Gets whether Unity Services have been successfully initialised.</summary>
     public bool IsInitialized => _isInitialized;
 
-    /// <summary>
-    /// Returns the total number of players (local + remote runners + remote guards).
-    /// </summary>
+    /// <summary>Returns the total number of players (local + remote runners + remote guards).</summary>
     public int TotalConnectedPlayers =>
         GameSettings.LocalPlayerCount + totalPlayers.Value + totalGuards.Value;
 
@@ -88,14 +99,12 @@ public class NetworkConnectionManager : NetworkBehaviour
 
     private const float HeartbeatInterval = 10f;
 
-    private UIManager _uiManager;
+    private LobbyManager _uiManager;
     private GameManager _gameManager;
 
     private PlayerType _selectedPlayerType = PlayerType.Runner;
     private Dictionary<ulong, PlayerType> _clientPlayerTypes = new Dictionary<ulong, PlayerType>();
     private Dictionary<ulong, PlayerType> _activeClientCount = new Dictionary<ulong, PlayerType>();
-
-    private int _lastPlayerCount;
 
     // ====================================================================
     // Unity Lifecycle
@@ -112,7 +121,6 @@ public class NetworkConnectionManager : NetworkBehaviour
         Instance = this;
 
         // DontDestroyOnLoad requires the object to be a scene root.
-        // If this component lives on a child object, reparent it here.
         if (transform.parent != null)
         {
             Debug.LogWarning("[NetworkConnectionManager] Object is not a root GameObject. " +
@@ -125,7 +133,11 @@ public class NetworkConnectionManager : NetworkBehaviour
 
     private void Start()
     {
-        InitializeUnityServices();
+        // Fire-and-forget: InitializeAsync must not block Start().
+        // Using a local async void wrapper avoids the InvalidOperationException
+        // that occurs when a running Task is inadvertently disposed via the
+        // discard pattern in some Unity/IL2CPP configurations.
+        InitializeAsync();
 
         if (NetworkManager.Singleton != null)
             RegisterNetworkCallbacks();
@@ -140,7 +152,7 @@ public class NetworkConnectionManager : NetworkBehaviour
     {
         base.OnNetworkSpawn();
 
-        _uiManager = FindAnyObjectByType<UIManager>();
+        _uiManager = FindAnyObjectByType<LobbyManager>();
         _gameManager = FindAnyObjectByType<GameManager>();
 
         totalPlayers.OnValueChanged += OnPlayerCountChanged;
@@ -149,7 +161,7 @@ public class NetworkConnectionManager : NetworkBehaviour
         UpdatePlayerCounter();
 
         if (IsServer)
-            Invoke(nameof(DelayedLobbyUpdate), 1f);
+            StartCoroutine(DelayedLobbyUpdateCoroutine());
     }
 
     /// <inheritdoc/>
@@ -163,6 +175,17 @@ public class NetworkConnectionManager : NetworkBehaviour
     // ====================================================================
     // Unity Services Initialisation
     // ====================================================================
+
+    /// <summary>
+    /// Fire-and-forget entry point called from <c>Start</c>.
+    /// Using <c>async void</c> here is intentional: it lets the initialisation
+    /// run without blocking the Unity main thread and without leaving a Task
+    /// reference that could be disposed prematurely.
+    /// </summary>
+    private async void InitializeAsync()
+    {
+        await InitializeUnityServices();
+    }
 
     /// <summary>
     /// Asynchronously initialises Unity Services and signs in the local player anonymously.
@@ -192,28 +215,29 @@ public class NetworkConnectionManager : NetworkBehaviour
     // NetworkManager Callbacks
     // ====================================================================
 
-    /// <summary>
-    /// Registers connection/disconnection callbacks on <see cref="NetworkManager.Singleton"/>.
-    /// </summary>
+    /// <summary>Registers connection/disconnection callbacks on <see cref="NetworkManager.Singleton"/>.</summary>
     private void RegisterNetworkCallbacks()
     {
+        if (_isNetcodeConfigured) return;
+
         NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
         NetworkManager.Singleton.OnClientDisconnectCallback += OnClientDisconnected;
         NetworkManager.Singleton.OnServerStarted += OnServerStarted;
+        _isNetcodeConfigured = true;
     }
 
     /// <summary>
-    /// Attaches the connection-approval callback and connection event handlers.
-    /// Called once before <see cref="NetworkManager.StartHost"/>.
+    /// Attaches the connection-approval callback before <see cref="NetworkManager.StartHost"/>.
+    /// Safe to call multiple times; unsubscribes before subscribing to prevent duplicate registrations.
     /// </summary>
     public void ConfigureNetworkManager()
     {
-        if (NetworkManager.Singleton == null || _isNetcodeConfigured) return;
+        if (NetworkManager.Singleton == null) return;
 
+        NetworkManager.Singleton.ConnectionApprovalCallback -= ApprovalCheck;
         NetworkManager.Singleton.ConnectionApprovalCallback += ApprovalCheck;
-        NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
-        NetworkManager.Singleton.OnClientDisconnectCallback += OnClientDisconnected;
-        _isNetcodeConfigured = true;
+
+        RegisterNetworkCallbacks();
     }
 
     private void OnServerStarted() { /* Reserved for future server-start logic. */ }
@@ -227,7 +251,6 @@ public class NetworkConnectionManager : NetworkBehaviour
     {
         if (IsServer) HandleClientDisconnected(clientId);
 
-        // If the host dropped, go back to the main menu.
         if (clientId == NetworkManager.ServerClientId)
             Disconnect(true);
     }
@@ -255,7 +278,6 @@ public class NetworkConnectionManager : NetworkBehaviour
             return;
         }
 
-        // Parse the player type from the connection payload.
         PlayerType clientType = PlayerType.Runner;
         byte[] payload = request.Payload;
         if (payload != null && payload.Length > 0
@@ -264,7 +286,6 @@ public class NetworkConnectionManager : NetworkBehaviour
             clientType = (PlayerType)payload[0];
         }
 
-        // For the host's own approval, use the locally selected type.
         if (NetworkManager.Singleton.IsHost
             && request.ClientNetworkId == NetworkManager.Singleton.LocalClientId)
         {
@@ -282,16 +303,14 @@ public class NetworkConnectionManager : NetworkBehaviour
 
     // ====================================================================
     // Host / Client Entry Points
-    // ====================================================================>
+    // ====================================================================
 
     /// <summary>
     /// Creates a Relay allocation, creates a Unity Lobby, and starts as host,
     /// then loads <paramref name="sceneName"/> for all connected clients.
-    /// Re-tries lobby creation up to five times to avoid ambiguous lobby codes.
     /// </summary>
     public async void StartHostWithScene(string sceneName)
     {
-        // Guard: prevent double-starts if the NetworkManager is already listening.
         if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening)
         {
             Debug.LogWarning("[NetworkConnectionManager] StartHostWithScene called while already listening. Ignoring.");
@@ -315,9 +334,6 @@ public class NetworkConnectionManager : NetworkBehaviour
                     var allocation = await RelayService.Instance.CreateAllocationAsync(MAX_TOTAL_PLAYERS);
                     string relayCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
 
-                    var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-                    transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, "dtls"));
-
                     var options = new CreateLobbyOptions
                     {
                         IsPrivate = false,
@@ -333,62 +349,52 @@ public class NetworkConnectionManager : NetworkBehaviour
                     _currentLobby = await LobbyService.Instance
                         .CreateLobbyAsync($"Lobby_{relayCode}", MAX_TOTAL_PLAYERS, options);
 
-                    if (IsCodeClean(_currentLobby.LobbyCode))
+                    if (!IsCodeClean(_currentLobby.LobbyCode))
                     {
-                        _lobbyCode = _currentLobby.LobbyCode;
-                        break;
+                        Debug.LogWarning($"[NetworkConnectionManager] Lobby code '{_currentLobby.LobbyCode}' " +
+                                         "contains forbidden characters. Retrying.");
+                        await LobbyService.Instance.DeleteLobbyAsync(_currentLobby.Id);
+                        _currentLobby = null;
+
+                        if (i < maxRetries - 1)
+                            await Task.Delay(500);
+
+                        continue;
                     }
 
-                    // Code contains forbidden characters – delete and retry.
-                    Debug.LogWarning($"[NetworkConnectionManager] Lobby code '{_currentLobby.LobbyCode}' " +
-                                     "contains forbidden characters. Retrying.");
-                    await LobbyService.Instance.DeleteLobbyAsync(_currentLobby.Id);
-                    _currentLobby = null;
+                    // Code is clean — configure transport with THIS allocation and start host.
+                    _lobbyCode = _currentLobby.LobbyCode;
+
+                    var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
+                    transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, "dtls"));
+
+                    ConfigureNetworkManager();
+                    NetworkManager.Singleton.NetworkConfig.ConnectionData = GetConnectionPayload();
+
+                    if (!NetworkManager.Singleton.StartHost())
+                    {
+                        Debug.LogError("[NetworkConnectionManager] NetworkManager.StartHost() returned false.");
+                        return;
+                    }
+
+                    ulong hostId = NetworkManager.Singleton.LocalClientId;
+                    _clientPlayerTypes.TryAdd(hostId, _selectedPlayerType);
+
+                    NetworkManager.Singleton.SceneManager.LoadScene(sceneName, LoadSceneMode.Single);
+                    _uiManager?.ShowLobbyUI(true, _lobbyCode);
+                    _ = HeartbeatLobbyAsync();
+                    _uiManager?.ShowLobbySetupUI();
+                    return; // Success — exit the method entirely.
                 }
                 catch (Exception e)
                 {
                     Debug.LogError($"[NetworkConnectionManager] Host attempt {i + 1} failed: {e.Message}");
                     if (i == maxRetries - 1) throw;
-                }
-
-                if (i < maxRetries - 1)
                     await Task.Delay(500);
-            }
-
-            if (_currentLobby == null)
-            {
-                Debug.LogError("[NetworkConnectionManager] Could not create a clean lobby after all retries.");
-                return;
-            }
-
-            ConfigureNetworkManager();
-
-            byte[] payload = GetConnectionPayload();
-            NetworkManager.Singleton.NetworkConfig.ConnectionData = payload;
-
-            if (!NetworkManager.Singleton.IsListening)
-            {
-                bool success = NetworkManager.Singleton.StartHost();
-                if (!success)
-                {
-                    Debug.LogError("[NetworkConnectionManager] NetworkManager.StartHost() returned false.");
                 }
             }
-            else
-            {
-                Debug.LogWarning("[NetworkConnectionManager] NetworkManager is already running. Skipping StartHost.");
-            }
 
-            ulong hostId = NetworkManager.Singleton.LocalClientId;
-            _clientPlayerTypes.TryAdd(hostId, _selectedPlayerType);
-
-            NetworkManager.Singleton.SceneManager.LoadScene(sceneName, LoadSceneMode.Single);
-
-            _uiManager?.ShowLobbyUI(true, _lobbyCode);
-
-#pragma warning disable 4014
-            HeartbeatLobbyAsync();
-#pragma warning restore 4014
+            Debug.LogError("[NetworkConnectionManager] Could not create a clean lobby after all retries.");
         }
         catch (Exception e)
         {
@@ -461,10 +467,7 @@ public class NetworkConnectionManager : NetworkBehaviour
                 else
                     await LobbyService.Instance.RemovePlayerAsync(_currentLobby.Id, _playerLobbyId);
             }
-            catch (LobbyServiceException e) when (e.Reason == LobbyExceptionReason.LobbyNotFound)
-            {
-                // Already gone – that's fine.
-            }
+            catch (LobbyServiceException e) when (e.Reason == LobbyExceptionReason.LobbyNotFound) { }
             catch (Exception e)
             {
                 Debug.LogWarning($"[NetworkConnectionManager] Lobby cleanup warning: {e.Message}");
@@ -480,8 +483,14 @@ public class NetworkConnectionManager : NetworkBehaviour
 
         if (goToMainMenu)
         {
-            SceneManager.LoadScene("MenuScene");
-            Invoke(nameof(ResetUIAfterSceneLoad), 0.5f);
+            SceneManager.LoadScene(MenuSceneName);
+
+            // Use a coroutine instead of Invoke so we can check whether this
+            // MonoBehaviour is still alive before executing, avoiding
+            // MissingReferenceException when an async exception triggers
+            // Disconnect after a scene transition has already destroyed the object.
+            if (this != null && gameObject != null)
+                StartCoroutine(DelayedUIResetCoroutine());
         }
     }
 
@@ -490,12 +499,9 @@ public class NetworkConnectionManager : NetworkBehaviour
 
     // ====================================================================
     // Game Flow
-    // ====================================================================>
+    // ====================================================================
 
-    /// <summary>
-    /// Instructs the <see cref="GameManager"/> to start the game.
-    /// Must be called directly on the server.
-    /// </summary>
+    /// <summary>Instructs the <see cref="GameManager"/> to start the game. Server-only.</summary>
     public void StartGame()
     {
         if (!IsServer)
@@ -511,9 +517,7 @@ public class NetworkConnectionManager : NetworkBehaviour
             Debug.LogError("[NetworkConnectionManager] GameManager not found.");
     }
 
-    /// <summary>
-    /// ServerRpc version of <see cref="StartGame"/> for client-initiated calls.
-    /// </summary>
+    /// <summary>ServerRpc version of <see cref="StartGame"/> for client-initiated calls.</summary>
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
     public void StartGameServerRpc()
     {
@@ -521,16 +525,11 @@ public class NetworkConnectionManager : NetworkBehaviour
         _gameManager?.StartGame();
     }
 
-    /// <summary>
-    /// Triggers a server-side player-count refresh.
-    /// Only callable when the object is already spawned on the network.
-    /// </summary>
+    /// <summary>Triggers a server-side player-count refresh.</summary>
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
     public void UpdatePlayerCountServerRpc() => UpdatePlayerCounter();
 
-    /// <summary>
-    /// Instructs all clients to load <paramref name="sceneName"/> via Netcode scene management.
-    /// </summary>
+    /// <summary>Instructs all clients to load <paramref name="sceneName"/>.</summary>
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
     public void LoadGameSceneServerRpc(string sceneName)
     {
@@ -548,7 +547,13 @@ public class NetworkConnectionManager : NetworkBehaviour
     /// defaulting to <see cref="PlayerType.Runner"/> if unknown.
     /// </summary>
     public PlayerType GetPlayerType(ulong clientId)
-        => _clientPlayerTypes.TryGetValue(clientId, out var t) ? t : PlayerType.Runner;
+    {
+        foreach (var a in GameSettings.SlotAssignments)
+            if (a.ClientId == clientId)
+                return a.SlotIndex < LobbyStateManager.RunnerSlotCount
+                    ? PlayerType.Runner : PlayerType.Catcher;
+        return _clientPlayerTypes.TryGetValue(clientId, out var t) ? t : PlayerType.Runner;
+    }
 
     /// <summary>Sets the player type chosen by the local player before joining.</summary>
     public void SetPlayerType(bool isCatcher)
@@ -588,26 +593,25 @@ public class NetworkConnectionManager : NetworkBehaviour
 
     private void HandleClientDisconnected(ulong clientId)
     {
+        // Release the lobby slot so the button becomes available again.
+        LobbyStateManager.Instance?.ReleaseClientSlot(clientId);
+
         if (_activeClientCount.TryGetValue(clientId, out PlayerType playerType))
         {
             if (playerType == PlayerType.Runner) totalPlayers.Value--;
             else totalGuards.Value--;
-
             _activeClientCount.Remove(clientId);
-            UpdatePlayerCounter();
         }
 
         _clientPlayerTypes.Remove(clientId);
+        GameSettings.SlotAssignments.RemoveAll(a => a.ClientId == clientId);
+        UpdatePlayerCounter();
     }
 
     // ====================================================================
     // Private – Lobby Heartbeat
     // ====================================================================
 
-    /// <summary>
-    /// Long-running async loop that sends heartbeat pings to the Unity Lobby
-    /// service and attempts to recreate the lobby on sustained failures.
-    /// </summary>
     private async Task HeartbeatLobbyAsync()
     {
         while (_currentLobby != null
@@ -689,12 +693,15 @@ public class NetworkConnectionManager : NetworkBehaviour
     {
         if (!IsServer) return;
 
-        // Count actual spawned objects rather than relying solely on connection events.
-        int runners = FindObjectsByType<PlayerMovement>(FindObjectsInactive.Exclude).Length;
-        int catchers = FindObjectsByType<Guard>(FindObjectsInactive.Exclude).Length;
+        // In the lobby phase: count connected clients (slots show actual selections).
+        // In game phase: count spawned player objects for accuracy.
+        int connected = NetworkManager.Singleton != null
+            ? NetworkManager.Singleton.ConnectedClientsList.Count
+            : 0;
 
-        totalPlayers.Value = runners;
-        totalGuards.Value = catchers;
+        // Update networkVariables so LobbyManager / InteractiveLobbyPanel can read them.
+        totalPlayers.Value = connected;
+        totalGuards.Value = 0; // detailed split shown by LobbyStateManager slots
 
         if (IsSpawned) UpdateLobbyTextsClientRpc(_lobbyCode);
     }
@@ -704,7 +711,6 @@ public class NetworkConnectionManager : NetworkBehaviour
         _clientPlayerTypes.Clear();
         _activeClientCount.Clear();
 
-        // Only write NetworkVariables while still spawned.
         if (IsSpawned)
         {
             totalPlayers.Value = 0;
@@ -712,7 +718,7 @@ public class NetworkConnectionManager : NetworkBehaviour
         }
 
         _selectedPlayerType = PlayerType.Runner;
-        _lastPlayerCount = 0;
+        _isNetcodeConfigured = false;
     }
 
     private bool IsCodeClean(string code)
@@ -764,17 +770,28 @@ public class NetworkConnectionManager : NetworkBehaviour
     // UI Helpers
     // ====================================================================
 
-    private void ResetUIAfterSceneLoad()
-        => Invoke(nameof(DelayedUIReset), 0.5f);
-
-    private void DelayedUIReset()
+    /// <summary>
+    /// Waits one second after scene load, then resets the main-menu UI and
+    /// reconnects button listeners.  Uses a coroutine (not <c>Invoke</c>) so
+    /// the null check on <c>this</c> prevents a
+    /// <see cref="MissingReferenceException"/> when the object is destroyed
+    /// mid-flight by an async exception during a scene transition.
+    /// </summary>
+    private System.Collections.IEnumerator DelayedUIResetCoroutine()
     {
-        FindAnyObjectByType<UIManager>()?.ShowMainMenuUI();
+        yield return new UnityEngine.WaitForSeconds(1f);
+
+        // Guard: the object may have been destroyed while we were waiting.
+        if (this == null) yield break;
+
+        FindAnyObjectByType<LobbyManager>()?.ShowMainMenuUI();
         MenuButtonHolder.ReconnectAllButtonsInScene();
     }
 
-    private void DelayedLobbyUpdate()
+    private System.Collections.IEnumerator DelayedLobbyUpdateCoroutine()
     {
+        yield return new UnityEngine.WaitForSeconds(1f);
+        if (this == null) yield break;
         if (IsServer && IsSpawned)
             UpdateLobbyTextsClientRpc(_lobbyCode);
     }
@@ -789,22 +806,174 @@ public class NetworkConnectionManager : NetworkBehaviour
     [ClientRpc]
     private void UpdateLobbyTextsClientRpc(string lobbyCode)
     {
-        if (UIManager.Instance == null) return;
+        if (LobbyManager.Instance == null) return;
 
         int current = GameSettings.LocalPlayerCount + totalPlayers.Value + totalGuards.Value;
-        UIManager.Instance.UpdatePlayerCounter(current, MAX_TOTAL_PLAYERS);
+        LobbyManager.Instance.UpdatePlayerCounter(current, MAX_TOTAL_PLAYERS);
 
         var gm = FindAnyObjectByType<GameManager>();
         if (gm != null && gm.gameStarted.Value) return;
 
         bool isHost = NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost;
-        UIManager.Instance.ShowLobbyUI(isHost, lobbyCode);
+        LobbyManager.Instance.ShowLobbyUI(isHost, lobbyCode);
     }
 
     [ClientRpc]
     private void NotifySceneChangeClientRpc(string sceneName)
     {
-        UIManager.Instance?.ShowLoadingMessage($"Loading: {sceneName}...");
+        LobbyManager.Instance?.ShowLoadingMessage($"Loading: {sceneName}...");
+    }
+
+    // ====================================================================
+    // Public – New Session Entry Points (called by MenuManager)
+    // ====================================================================
+
+    /// <summary>
+    /// Creates a Unity Relay + Lobby and starts as host, then invokes
+    /// <paramref name="onSuccess"/> or <paramref name="onFailure"/> on the
+    /// main thread.  The scene is NOT loaded yet — the host navigates to
+    /// <see cref="LobbySetupPanel"/> first, then calls
+    /// <see cref="GameManager.SpawnAllPlayersAndStartGame"/> when ready.
+    ///
+    /// Both <see cref="SessionMode.Local"/> and <see cref="SessionMode.Online"/>
+    /// create a Relay so online players can join via the lobby code.
+    /// The <paramref name="mode"/> value is stored for display purposes in
+    /// <see cref="LobbySetupPanel"/>.
+    /// </summary>
+    /// <param name="mode">Session intent (local split-screen vs online-first).</param>
+    /// <param name="onSuccess">Called on the main thread when the host is ready.</param>
+    /// <param name="onFailure">Called on the main thread with an error message on failure.</param>
+    public async void StartSessionAndGoToLobby(
+        SessionMode mode,
+        System.Action onSuccess,
+        System.Action<string> onFailure)
+    {
+        if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening)
+        {
+            onFailure?.Invoke("A session is already running.");
+            return;
+        }
+
+        try
+        {
+            if (!_isInitialized)
+                await InitializeUnityServices();
+
+            if (!AuthenticationService.Instance.IsSignedIn)
+                await AuthenticationService.Instance.SignInAnonymouslyAsync();
+
+            const int maxRetries = 5;
+
+            for (int i = 0; i < maxRetries; i++)
+            {
+                try
+                {
+                    var allocation = await RelayService.Instance.CreateAllocationAsync(MAX_TOTAL_PLAYERS);
+                    string relayCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
+
+                    var options = new CreateLobbyOptions
+                    {
+                        IsPrivate = false,
+                        Data = new Dictionary<string, DataObject>
+                        {
+                            { "RelayJoinCode", new DataObject(DataObject.VisibilityOptions.Member, relayCode) },
+                            { "SessionMode",   new DataObject(DataObject.VisibilityOptions.Member, mode.ToString()) }
+                        }
+                    };
+
+                    _currentLobby = await LobbyService.Instance
+                        .CreateLobbyAsync($"Lobby_{relayCode}", MAX_TOTAL_PLAYERS, options);
+
+                    if (!IsCodeClean(_currentLobby.LobbyCode))
+                    {
+                        await LobbyService.Instance.DeleteLobbyAsync(_currentLobby.Id);
+                        _currentLobby = null;
+                        if (i < maxRetries - 1) { await Task.Delay(500); continue; }
+                        else throw new Exception("Could not obtain a clean lobby code after all retries.");
+                    }
+
+                    _lobbyCode = _currentLobby.LobbyCode;
+
+                    var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
+                    transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, "dtls"));
+
+                    ConfigureNetworkManager();
+                    NetworkManager.Singleton.NetworkConfig.ConnectionData = GetConnectionPayload();
+
+                    if (!NetworkManager.Singleton.StartHost())
+                        throw new Exception("NetworkManager.StartHost() returned false.");
+
+                    _clientPlayerTypes.TryAdd(NetworkManager.Singleton.LocalClientId, _selectedPlayerType);
+
+                    // Load the Lobby Scene for all connected clients via Netcode's
+                    // scene manager.  Clients who join later are automatically placed
+                    // in the host's current scene by Netcode.
+                    NetworkManager.Singleton.SceneManager.LoadScene(
+                        LobbySceneName, LoadSceneMode.Single);
+
+                    _ = HeartbeatLobbyAsync();
+                    onSuccess?.Invoke();
+                    return;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"[NetworkConnectionManager] Session attempt {i + 1} failed: {e.Message}");
+                    if (i == maxRetries - 1) throw;
+                    await Task.Delay(500);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            onFailure?.Invoke(e.Message);
+        }
+    }
+
+    /// <summary>
+    /// Joins an existing session by lobby code and starts as a client,
+    /// then invokes <paramref name="onSuccess"/> or <paramref name="onFailure"/>.
+    /// </summary>
+    /// <param name="joinCode">The 6-character lobby code.</param>
+    /// <param name="onSuccess">Called on the main thread when the client is connected.</param>
+    /// <param name="onFailure">Called on the main thread with an error message on failure.</param>
+    public async void JoinSessionByCode(
+        string joinCode,
+        System.Action onSuccess,
+        System.Action<string> onFailure)
+    {
+        try
+        {
+            if (!_isInitialized)
+                await InitializeUnityServices();
+
+            if (!AuthenticationService.Instance.IsSignedIn)
+                await AuthenticationService.Instance.SignInAnonymouslyAsync();
+
+            var lobby = await LobbyService.Instance.JoinLobbyByCodeAsync(joinCode);
+            _currentLobby = lobby;
+
+            string relayJoinCode = _currentLobby.Data["RelayJoinCode"].Value;
+
+            var joinAllocation = await RelayService.Instance.JoinAllocationAsync(relayJoinCode);
+            var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
+            transport.SetRelayServerData(AllocationUtils.ToRelayServerData(joinAllocation, "dtls"));
+
+            NetworkManager.Singleton.NetworkConfig.ConnectionData = GetConnectionPayload();
+
+            if (!NetworkManager.Singleton.StartClient())
+                throw new Exception("NetworkManager.StartClient() returned false.");
+
+            _lobbyCode = joinCode;
+            onSuccess?.Invoke();
+        }
+        catch (LobbyServiceException e) when (e.Reason == LobbyExceptionReason.LobbyNotFound)
+        {
+            onFailure?.Invoke($"Lobby '{joinCode}' not found.");
+        }
+        catch (Exception e)
+        {
+            onFailure?.Invoke(e.Message);
+        }
     }
 
     // ====================================================================

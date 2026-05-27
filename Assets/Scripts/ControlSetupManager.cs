@@ -7,13 +7,8 @@ using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.Users;
 
 /// <summary>
-/// Assigns input devices (keyboard/mouse or gamepads) to each local player slot.
-/// Persists across scene loads so device assignments survive scene transitions.
-///
-/// Distribution logic:
-///   - If there are fewer gamepads than local players, the earliest player indices
-///     are assigned the keyboard; the remaining players receive gamepads in order.
-///   - Example: 4 local players, 3 gamepads -> Player 0 = Keyboard, Players 1-3 = Gamepads.
+/// Assigns Input System devices to each local player slot for dual-screen
+/// local multiplayer.
 /// </summary>
 public class ControlSetupManager : MonoBehaviour
 {
@@ -25,10 +20,26 @@ public class ControlSetupManager : MonoBehaviour
     public static ControlSetupManager Instance { get; private set; }
 
     // ====================================================================
+    // Constants
+    // ====================================================================
+
+    // Fallback scheme names used when auto-detection cannot find a match.
+    // These must match your Input Action Asset's Control Scheme names exactly.
+    // If you see "Cannot find control scheme" errors, update these values to
+    // match what you named your schemes (e.g. "Keyboard&Mouse", "Controller", etc.)
+    internal const string FallbackSchemeKeyboard = "Keyboard";
+    internal const string FallbackSchemeGamepad = "Gamepad";
+    private const int MaxRetryFrames = 10;
+
+    // ====================================================================
     // Private State
     // ====================================================================
 
-    /// <summary>Maps a player index to the <see cref="InputDevice"/> assigned to that slot.</summary>
+    /// <summary>
+    /// Maps a global player index to the primary <see cref="InputDevice"/> for that slot.
+    /// Global index = runner slots first, then catcher slots.
+    /// e.g. 2 runners + 1 catcher -> indices 0,1 = runners, index 2 = catcher.
+    /// </summary>
     private readonly Dictionary<int, InputDevice> _playerDevices = new Dictionary<int, InputDevice>();
 
     // ====================================================================
@@ -37,23 +48,21 @@ public class ControlSetupManager : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance == null)
-        {
-            Instance = this;
-            DontDestroyOnLoad(gameObject);
-        }
-        else
-        {
-            Destroy(gameObject);
-        }
+        if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+
+        Instance = this;
+
+        if (transform.parent != null)
+            transform.SetParent(null);
+
+        DontDestroyOnLoad(gameObject);
     }
 
     private void OnDestroy()
     {
         foreach (var device in _playerDevices.Values)
-        {
             if (device != null) ReleaseDevice(device);
-        }
+
         _playerDevices.Clear();
     }
 
@@ -62,211 +71,310 @@ public class ControlSetupManager : MonoBehaviour
     // ====================================================================
 
     /// <summary>
-    /// Assigns the appropriate control scheme and input device to the
-    /// <see cref="PlayerInput"/> component on <paramref name="player"/>.
+    /// Assigns the appropriate control scheme and device to <paramref name="player"/>'s
+    /// <see cref="PlayerInput"/> component.
     /// </summary>
-    /// <param name="player">The player GameObject that has a <see cref="PlayerInput"/> component.</param>
-    /// <param name="playerIndex">Zero-based local player index.</param>
-    public void AssignControlScheme(GameObject player, int playerIndex)
+    /// <param name="player">GameObject that owns a <see cref="PlayerInput"/> component.</param>
+    /// <param name="globalIndex">
+    /// Zero-based global player index.
+    /// Runner indices start at 0; Catcher indices start at <see cref="GameSettings.LocalRunnerCount"/>.
+    /// </param>
+    public void AssignControlScheme(GameObject player, int globalIndex)
     {
         if (!player.TryGetComponent<PlayerInput>(out var pInput)) return;
 
-        // Try immediate assignment; if the user is not yet valid, retry over several frames.
         if (pInput.user.valid)
-            AssignControlSchemeInternal(pInput, playerIndex);
+            AssignInternal(pInput, globalIndex);
         else
-            StartCoroutine(DelayedAssignment(pInput, playerIndex));
+            StartCoroutine(RetryAssign(pInput, globalIndex));
     }
 
     /// <summary>
-    /// Releases the device assigned to <paramref name="playerIndex"/> and removes the mapping.
+    /// Convenience wrapper for Runner players.
+    /// <paramref name="runnerIndex"/> is the zero-based index within the runner group.
     /// </summary>
-    public void ReleasePlayerDevice(int playerIndex)
+    public void AssignRunnerControl(GameObject player, int runnerIndex)
+        => AssignControlScheme(player, runnerIndex);
+
+    /// <summary>
+    /// Convenience wrapper for Catcher players.
+    /// <paramref name="catcherIndex"/> is the zero-based index within the catcher group.
+    /// Internally offset by <see cref="GameSettings.LocalRunnerCount"/>.
+    /// </summary>
+    public void AssignCatcherControl(GameObject player, int catcherIndex)
+        => AssignControlScheme(player, GameSettings.LocalRunnerCount + catcherIndex);
+
+    /// <summary>Releases the device assigned to <paramref name="globalIndex"/>.</summary>
+    public void ReleasePlayerDevice(int globalIndex)
     {
-        if (!_playerDevices.TryGetValue(playerIndex, out var device)) return;
-        _playerDevices.Remove(playerIndex);
+        if (!_playerDevices.TryGetValue(globalIndex, out var device)) return;
+        _playerDevices.Remove(globalIndex);
         ReleaseDevice(device);
     }
 
     /// <summary>
-    /// Returns <c>true</c> if <paramref name="playerIndex"/> has an assigned input device.
+    /// Returns <c>true</c> if <paramref name="globalIndex"/> has an assigned device.
     /// </summary>
-    public bool HasControlAssigned(int playerIndex)
-        => _playerDevices.TryGetValue(playerIndex, out var d) && d != null;
+    public bool HasControlAssigned(int globalIndex)
+        => _playerDevices.TryGetValue(globalIndex, out var d) && d != null;
 
     /// <summary>
-    /// Returns the <see cref="InputDevice"/> assigned to <paramref name="playerIndex"/>,
+    /// Returns the primary <see cref="InputDevice"/> for <paramref name="globalIndex"/>,
     /// or <c>null</c> if none is assigned.
     /// </summary>
-    public InputDevice GetPlayerDevice(int playerIndex)
-        => _playerDevices.TryGetValue(playerIndex, out var d) ? d : null;
+    public InputDevice GetPlayerDevice(int globalIndex)
+        => _playerDevices.TryGetValue(globalIndex, out var d) ? d : null;
 
-    /// <summary>Logs the current device assignments and available hardware to the console.</summary>
+    /// <summary>Logs all current device assignments to the Unity console.</summary>
     public void DebugCurrentDevices()
     {
         Debug.Log("=== ControlSetupManager – Current Devices ===");
+
         if (_playerDevices.Count == 0)
         {
             Debug.Log("  No devices assigned yet.");
         }
         else
         {
-            foreach (var kvp in _playerDevices)
+            int runnerCount = GameSettings.LocalRunnerCount;
+            int catcherCount = GameSettings.LocalCatcherCount;
+
+            foreach (var kvp in _playerDevices.OrderBy(k => k.Key))
             {
-                string type = kvp.Value is Gamepad ? "Gamepad" :
-                              kvp.Value is Keyboard ? "Keyboard" : "Unknown";
-                Debug.Log($"  Player {kvp.Key + 1}: {type} – {kvp.Value?.name ?? "null"}");
+                string role = kvp.Key < runnerCount ? "Runner" : "Catcher";
+                int local = kvp.Key < runnerCount
+                    ? kvp.Key
+                    : kvp.Key - runnerCount;
+                string device = kvp.Value is Gamepad ? $"Gamepad ({kvp.Value.name})" :
+                                kvp.Value is Keyboard ? $"Keyboard ({kvp.Value.name})" : kvp.Value.name;
+                Debug.Log($"  [{role} {local + 1}] global={kvp.Key} -> {device}");
             }
         }
 
         Debug.Log($"  Gamepads connected: {Gamepad.all.Count}");
-        for (int i = 0; i < Gamepad.all.Count; i++)
-            Debug.Log($"    [{i}] {Gamepad.all[i].name}");
-
-        Debug.Log($"  Keyboard available: {(Keyboard.current != null ? "Yes" : "No")}");
+        Debug.Log($"  Keyboard available: {Keyboard.current != null}");
     }
 
     // ====================================================================
-    // Private – Assignment Logic
+    // Private – Assignment
     // ====================================================================
 
-    /// <summary>
-    /// Retries device assignment over multiple frames, waiting until the
-    /// <see cref="InputUser"/> is valid.
-    /// </summary>
-    private IEnumerator DelayedAssignment(PlayerInput pInput, int playerIndex)
+    private void AssignInternal(PlayerInput pInput, int globalIndex)
     {
-        const int maxAttempts = 10;
-        for (int i = 0; i < maxAttempts; i++)
+        try
+        {
+            // Clear any previous pairing cleanly.
+            if (pInput.user.valid)
+                pInput.user.UnpairDevices();
+
+            // Honour the device the player physically used to join the session.
+            // SelectDeviceFor is only used as a fallback if no registration exists.
+            InputDevice registeredDevice = LocalPlayerManager.Instance?.GetDevice(globalIndex);
+            InputDevice device = (registeredDevice != null && !_playerDevices.ContainsValue(registeredDevice))
+                ? registeredDevice
+                : SelectDeviceFor(globalIndex);
+
+            if (device == null)
+            {
+                Debug.LogWarning($"[ControlSetupManager] No device available for global index {globalIndex}. " +
+                                 "Player will have no dedicated input.");
+                ApplyFallback(pInput, globalIndex);
+                return;
+            }
+
+            // Pair primary device.
+            InputUser.PerformPairingWithDevice(device, pInput.user);
+
+            if (device is Keyboard)
+            {
+                // Pair mouse alongside keyboard.
+                if (Mouse.current != null)
+                    InputUser.PerformPairingWithDevice(Mouse.current, pInput.user);
+
+                pInput.SwitchCurrentControlScheme(
+                    FindKeyboardScheme(pInput),
+                    Mouse.current != null
+                        ? new InputDevice[] { Keyboard.current, Mouse.current }
+                        : new InputDevice[] { Keyboard.current });
+
+                Debug.Log($"[ControlSetupManager] Global {globalIndex} -> Keyboard+Mouse");
+            }
+            else if (device is Gamepad)
+            {
+                pInput.SwitchCurrentControlScheme(FindGamepadScheme(pInput), device);
+                Debug.Log($"[ControlSetupManager] Global {globalIndex} -> Gamepad: {device.name}");
+            }
+
+            _playerDevices[globalIndex] = device;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[ControlSetupManager] Error assigning index {globalIndex}: {e.Message}");
+            ApplyFallback(pInput, globalIndex);
+        }
+    }
+
+    /// <summary>
+    /// Selects the best available device for a given global player index.
+    ///
+    /// Assignment table (example: 2 runners, 1 catcher):
+    /// <code>
+    ///   Global 0 (Runner 1) -> Keyboard+Mouse
+    ///   Global 1 (Runner 2) -> Gamepad[0]
+    ///   Global 2 (Catcher 1) -> Gamepad[1]
+    /// </code>
+    ///
+    /// The keyboard slot is always global index 0 (Runner 1).
+    /// All other slots draw from the gamepad pool in connection order.
+    /// </summary>
+    private InputDevice SelectDeviceFor(int globalIndex)
+    {
+        // Build the available gamepad pool (excluding already-assigned ones).
+        var availableGamepads = Gamepad.all
+            .Where(gp => !_playerDevices.ContainsValue(gp))
+            .ToList();
+
+        bool kbFree = Keyboard.current != null
+                   && !_playerDevices.ContainsValue(Keyboard.current);
+
+        // Global index 0 always gets keyboard (Runner 1).
+        if (globalIndex == 0 && kbFree)
+            return Keyboard.current;
+
+        // All other slots get a gamepad.
+        // The gamepad index within the pool is:
+        //   globalIndex - 1  (because index 0 consumed the keyboard).
+        int gpPoolIndex = globalIndex > 0 ? globalIndex - 1 : 0;
+        return gpPoolIndex < availableGamepads.Count
+            ? availableGamepads[gpPoolIndex]
+            : null;
+    }
+
+    private IEnumerator RetryAssign(PlayerInput pInput, int globalIndex)
+    {
+        for (int i = 0; i < MaxRetryFrames; i++)
         {
             if (pInput.user.valid)
             {
-                AssignControlSchemeInternal(pInput, playerIndex);
+                AssignInternal(pInput, globalIndex);
                 yield break;
             }
             yield return null;
         }
 
-        Debug.LogError($"[ControlSetupManager] Failed to assign controls for Player {playerIndex} " +
-                       $"after {maxAttempts} attempts. Using emergency fallback.");
-        EmergencyAssignment(pInput, playerIndex);
+        Debug.LogError($"[ControlSetupManager] InputUser never became valid for global index {globalIndex}. " +
+                       "Using emergency fallback.");
+        EmergencyAssign(pInput, globalIndex);
     }
 
-    private void AssignControlSchemeInternal(PlayerInput pInput, int playerIndex)
+    // ====================================================================
+    // Private – Fallbacks
+    // ====================================================================
+
+    private void ApplyFallback(PlayerInput pInput, int globalIndex)
     {
         try
         {
-            if (pInput.user.valid)
-                pInput.user.UnpairDevices();
-
-            InputDevice device = GetDeviceForPlayer(playerIndex);
-
-            if (device == null)
-            {
-                Debug.LogWarning($"[ControlSetupManager] No device available for Player {playerIndex + 1}. " +
-                                 "Using minimal fallback.");
-                MinimalFallback(pInput, playerIndex);
-                return;
-            }
-
-            InputUser.PerformPairingWithDevice(device, pInput.user);
-
-            if (device is Gamepad)
-            {
-                pInput.SwitchCurrentControlScheme("Gamepad", device);
-                Debug.Log($"[ControlSetupManager] Player {playerIndex + 1} -> Gamepad: {device.name}");
-            }
-            else if (device is Keyboard)
+            bool kbUsed = _playerDevices.ContainsValue(Keyboard.current);
+            if (Keyboard.current != null && !kbUsed)
             {
                 if (Mouse.current != null)
-                {
                     InputUser.PerformPairingWithDevice(Mouse.current, pInput.user);
-                    pInput.SwitchCurrentControlScheme("KeyboardMouse", Keyboard.current, Mouse.current);
-                    Debug.Log($"[ControlSetupManager] Player {playerIndex + 1} -> Keyboard + Mouse");
-                }
-                else
-                {
-                    pInput.SwitchCurrentControlScheme("Keyboard", Keyboard.current);
-                    Debug.Log($"[ControlSetupManager] Player {playerIndex + 1} -> Keyboard (no mouse)");
-                }
-            }
 
-            _playerDevices[playerIndex] = device;
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"[ControlSetupManager] Error assigning controls for Player {playerIndex}: {e.Message}");
-            MinimalFallback(pInput, playerIndex);
-        }
-    }
+                pInput.SwitchCurrentControlScheme(FindKeyboardScheme(pInput),
+                    Mouse.current != null
+                        ? new InputDevice[] { Keyboard.current, Mouse.current }
+                        : new InputDevice[] { Keyboard.current });
 
-    /// <summary>
-    /// Selects the best available device for the given player index, respecting
-    /// the distribution rule: keyboard first for slots without a gamepad.
-    /// </summary>
-    private InputDevice GetDeviceForPlayer(int playerIndex)
-    {
-        var gamepads = Gamepad.all.ToList();
-        bool kbAvailable = Keyboard.current != null && !_playerDevices.ContainsValue(Keyboard.current);
-        int totalLocal = GameSettings.LocalPlayerCount;
-        int kbSlots = Mathf.Max(0, totalLocal - gamepads.Count);
-
-        // Remove already-assigned gamepads from the pool.
-        foreach (var d in _playerDevices.Values)
-        {
-            if (d is Gamepad gp) gamepads.Remove(gp);
-        }
-
-        if (playerIndex < kbSlots)
-        {
-            // This slot uses the keyboard.
-            return kbAvailable ? (InputDevice)Keyboard.current : null;
-        }
-        else
-        {
-            // This slot uses a gamepad.
-            int gpIndex = playerIndex - kbSlots;
-            return gpIndex < gamepads.Count ? gamepads[gpIndex] : null;
-        }
-    }
-
-    private void MinimalFallback(PlayerInput pInput, int playerIndex)
-    {
-        try
-        {
-            if (Keyboard.current != null && !_playerDevices.ContainsValue(Keyboard.current))
-            {
-                pInput.SwitchCurrentControlScheme("KeyboardMouse", Keyboard.current, Mouse.current);
-                Debug.LogWarning($"[ControlSetupManager] Player {playerIndex + 1} -> Shared keyboard (fallback).");
+                Debug.LogWarning($"[ControlSetupManager] Global {globalIndex} -> Shared keyboard (fallback).");
             }
             else
             {
-                Debug.LogWarning($"[ControlSetupManager] Player {playerIndex + 1} -> No control assigned.");
+                Debug.LogWarning($"[ControlSetupManager] Global {globalIndex} -> No input assigned.");
             }
         }
         catch
         {
-            // Swallow – the game must continue even without a fully configured device.
+            // Swallow – the game must continue regardless.
         }
     }
 
-    private void EmergencyAssignment(PlayerInput pInput, int playerIndex)
+    private void EmergencyAssign(PlayerInput pInput, int globalIndex)
     {
-        Debug.LogWarning($"[ControlSetupManager] Emergency assignment for Player {playerIndex + 1}.");
+        Debug.LogWarning($"[ControlSetupManager] Emergency assignment for global index {globalIndex}.");
 
         var gamepads = Gamepad.all;
-        if (playerIndex < gamepads.Count)
-            pInput.SwitchCurrentControlScheme("Gamepad", gamepads[playerIndex]);
+        if (globalIndex < gamepads.Count)
+            pInput.SwitchCurrentControlScheme(FindGamepadScheme(pInput), gamepads[globalIndex]);
         else if (Keyboard.current != null)
-            pInput.SwitchCurrentControlScheme("KeyboardMouse", Keyboard.current, Mouse.current);
+            pInput.SwitchCurrentControlScheme(FindKeyboardScheme(pInput), Keyboard.current, Mouse.current);
     }
 
-    private static void PairDeviceToPlayer(PlayerInput pInput, InputDevice device, string scheme)
+
+    // ====================================================================
+    // Private – Scheme Name Auto-Detection
+    // ====================================================================
+
+    /// <summary>
+    /// Returns the control scheme name for Keyboard+Mouse from
+    /// <paramref name="pInput"/>'s action asset.
+    /// Searches for a scheme whose name contains "keyboard" (case-insensitive).
+    /// Falls back to <see cref="FallbackSchemeKeyboardMouse"/> if not found.
+    /// </summary>
+    private static string FindKeyboardScheme(PlayerInput pInput)
     {
-        pInput.user.UnpairDevices();
-        InputUser.PerformPairingWithDevice(device, pInput.user);
-        pInput.SwitchCurrentControlScheme(scheme, device);
+        if (pInput?.actions == null) return FallbackSchemeKeyboard;
+
+        foreach (var scheme in pInput.actions.controlSchemes)
+        {
+            string lower = scheme.name.ToLowerInvariant();
+            if (lower.Contains("keyboard"))
+                return scheme.name;
+        }
+
+        Debug.LogWarning($"[ControlSetupManager] No Keyboard+Mouse scheme found in " +
+                         $"'{pInput.actions.name}'. " +
+                         $"Available schemes: {ListSchemes(pInput)} " +
+                         $"Falling back to '{FallbackSchemeKeyboard}'.");
+        return FallbackSchemeKeyboard;
     }
+
+    /// <summary>
+    /// Returns the control scheme name for Gamepad from
+    /// <paramref name="pInput"/>'s action asset.
+    /// Searches for a scheme whose name contains "gamepad" or "controller".
+    /// Falls back to <see cref="FallbackSchemeGamepad"/> if not found.
+    /// </summary>
+    private static string FindGamepadScheme(PlayerInput pInput)
+    {
+        if (pInput?.actions == null) return FallbackSchemeGamepad;
+
+        foreach (var scheme in pInput.actions.controlSchemes)
+        {
+            string lower = scheme.name.ToLowerInvariant();
+            if (lower.Contains("gamepad") || lower.Contains("controller"))
+                return scheme.name;
+        }
+
+        Debug.LogWarning($"[ControlSetupManager] No Gamepad scheme found in " +
+                         $"'{pInput.actions.name}'. " +
+                         $"Available schemes: {ListSchemes(pInput)} " +
+                         $"Falling back to '{FallbackSchemeGamepad}'.");
+        return FallbackSchemeGamepad;
+    }
+
+    private static string ListSchemes(PlayerInput pInput)
+    {
+        if (pInput?.actions == null) return "(none)";
+        var names = new System.Collections.Generic.List<string>();
+        foreach (var s in pInput.actions.controlSchemes)
+            names.Add($"'{s.name}'");
+        return string.Join(", ", names);
+    }
+
+    // ====================================================================
+    // Private – Device Release
+    // ====================================================================
 
     private static void ReleaseDevice(InputDevice device)
     {

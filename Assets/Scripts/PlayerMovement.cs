@@ -35,9 +35,7 @@ public class PlayerMovement : NetworkBehaviour
     public Vector3 initialBackpackScale = new Vector3(0.4f, 0.2f, 0.4f);
 
     /// <summary>
-    /// Scale presets for each coin-level step.
-    /// Index 0 = 1 coin carried, index N-1 = N coins carried.
-    /// Automatically initialised in <see cref="Awake"/> if left empty.
+    /// Scale presets for each coin-level step (auto-initialised in <see cref="Awake"/>).
     /// </summary>
     public Vector3[] backpackScales = new Vector3[MaxBackpackLevels];
 
@@ -46,7 +44,7 @@ public class PlayerMovement : NetworkBehaviour
     // ====================================================================
 
     [Header("Coin Interaction Settings")]
-    /// <summary>Seconds it takes to complete a coin collection action.</summary>
+    /// <summary>Seconds to complete a coin collection action.</summary>
     public float collectionDuration = 0.5f;
 
     /// <summary>Distance in front of the player at which dropped coins appear.</summary>
@@ -84,7 +82,7 @@ public class PlayerMovement : NetworkBehaviour
     /// <summary>Number of coins currently held, replicated to all clients.</summary>
     public NetworkVariable<int> coinsCarried = new NetworkVariable<int>(0);
 
-    /// <summary>Whether this character is acting as a Runner (always <c>true</c> here).</summary>
+    /// <summary>Always <c>true</c> for the Runner role.</summary>
     public NetworkVariable<bool> IsRunner = new NetworkVariable<bool>(true);
 
     /// <summary>Remaining dash cooldown in seconds; server-authoritative.</summary>
@@ -97,17 +95,17 @@ public class PlayerMovement : NetworkBehaviour
     public NetworkVariable<bool> IsInvulnerable = new NetworkVariable<bool>(false);
 
     // ====================================================================
-    // Other Public Fields
+    // Public Fields
     // ====================================================================
 
-    /// <summary>Lerp factor used to smooth remote-client position interpolation.</summary>
+    /// <summary>Lerp factor for remote-client position interpolation.</summary>
     public float networkMovementSmoothness = 5f;
 
     /// <summary>Duration of the invulnerability window after being hit.</summary>
     public float invulnerabilityDuration = 3f;
 
     // ====================================================================
-    // Private – Component References
+    // Private – Components
     // ====================================================================
 
     private CharacterController _characterController;
@@ -115,11 +113,25 @@ public class PlayerMovement : NetworkBehaviour
     private GameManager _gameManager;
 
     // ====================================================================
-    // Private – Movement State
+    // Private – Movement
     // ====================================================================
 
     private float _baseMoveSpeed;
     private float _verticalVelocity;
+
+    // ====================================================================
+    // Private – Input State (Input System)
+    // ====================================================================
+
+    /// <summary>Movement vector read from the Input System "Move" action.</summary>
+    private Vector2 _inputMove;
+
+    /// <summary>Movement vector sent by the virtual joystick (mobile).</summary>
+    private Vector2 _mobileMoveVector;
+
+    private bool _dashPressed;
+    private bool _collectPressed;
+    private bool _dropPressed;
 
     // ====================================================================
     // Private – Coin Interaction
@@ -129,30 +141,18 @@ public class PlayerMovement : NetworkBehaviour
     private bool _isCollecting;
 
     // ====================================================================
-    // Private – Dash State
+    // Private – Dash
     // ====================================================================
 
     private bool _isDashing;
     private float _localDashCooldown;
 
     // ====================================================================
-    // Private – Backpack Progression
+    // Private – Backpack
     // ====================================================================
 
     private int _scoreToWin = 20;
     private float _coinsPerLevel = 1f;
-
-    // ====================================================================
-    // Private – Input (New Input System)
-    // ====================================================================
-
-    private Vector2 _inputMove;
-
-    // Mobile virtual-button overrides.
-    private Vector2 _mobileMoveVector;
-    private bool _dashPressed;
-    private bool _collectPressed;
-    private bool _dropPressed;
 
     // ====================================================================
     // Unity Lifecycle
@@ -172,12 +172,10 @@ public class PlayerMovement : NetworkBehaviour
         _characterController = GetComponent<CharacterController>();
 
         if (_characterController == null)
-            Debug.LogError("[PlayerMovement] Missing CharacterController component.");
+            Debug.LogError("[PlayerMovement] Missing CharacterController.");
 
-        // Keep the GameObject name in sync with the networked player number.
         playerNumber.OnValueChanged += (_, n) => gameObject.name = "Runner_P" + n;
-        if (playerNumber.Value > 0)
-            gameObject.name = "Runner_P" + playerNumber.Value;
+        if (playerNumber.Value > 0) gameObject.name = "Runner_P" + playerNumber.Value;
 
         coinsCarried.OnValueChanged += OnCoinsCarriedChanged;
         DashCooldownRemaining.OnValueChanged += OnDashCooldownChanged;
@@ -185,11 +183,12 @@ public class PlayerMovement : NetworkBehaviour
         if (IsOwner)
         {
             _localDashCooldown = DashCooldownRemaining.Value;
-
-            // Notify UI systems about this newly spawned local player.
             FindAnyObjectByType<MobileButtonsSetup>()?.FindAndSetupButtons();
             FindAnyObjectByType<SplitScreenManager>()?.RefreshCameras();
             FindAnyObjectByType<UIManager>()?.SetLocalPlayerMovement(this);
+
+            if (!IsServer)
+                StartCoroutine(AssignControlsFromSlotData());
         }
 
         _coinSpawner = FindAnyObjectByType<CoinSpawner>();
@@ -202,11 +201,10 @@ public class PlayerMovement : NetworkBehaviour
     private void Start()
     {
         _gameManager ??= FindAnyObjectByType<GameManager>();
-
         if (_gameManager != null)
         {
             _scoreToWin = _gameManager.scoreToWin;
-            CalculateProgressionFactor();
+            _coinsPerLevel = Mathf.Max(1f, (float)_scoreToWin / MaxBackpackLevels);
         }
     }
 
@@ -218,9 +216,34 @@ public class PlayerMovement : NetworkBehaviour
         DashCooldownRemaining.OnValueChanged -= OnDashCooldownChanged;
     }
 
+    /// <summary>
+    /// Waits one frame then assigns the correct device from <see cref="GameSettings.SlotAssignments"/>
+    /// on the client machine that owns this player object.
+    /// </summary>
+    private System.Collections.IEnumerator AssignControlsFromSlotData()
+    {
+        yield return null;
+
+        ulong localClientId = NetworkManager.Singleton.LocalClientId;
+        int localIdx = 0;
+        int countForClient = 0;
+
+        foreach (var slot in GameSettings.SlotAssignments)
+        {
+            if (slot.ClientId != localClientId) continue;
+            if (slot.SlotIndex < LobbyStateManager.RunnerSlotCount)
+            {
+                if (countForClient == 0) localIdx = slot.LocalPlayerIndex;
+                countForClient++;
+            }
+        }
+
+        if (ControlSetupManager.Instance != null)
+            ControlSetupManager.Instance.AssignControlScheme(gameObject, localIdx);
+    }
+
     private void Update()
     {
-        // Only the server decrements the authoritative dash cooldown.
         if (IsServer && DashCooldownRemaining.Value > 0f)
             DashCooldownRemaining.Value = Mathf.Max(0f, DashCooldownRemaining.Value - Time.deltaTime);
 
@@ -229,14 +252,58 @@ public class PlayerMovement : NetworkBehaviour
         ApplyGravity();
 
         if (!_isCollecting)
-            HandlePlayerInput();
+            HandleInput();
     }
 
     // ====================================================================
-    // Public – Mobile Input API
+    // Public – Input System Callbacks  (Send Messages mode)
     // ====================================================================
 
-    /// <summary>Sets the movement direction from a virtual joystick (mobile).</summary>
+    /// <summary>
+    /// Called by <see cref="PlayerInput"/> (Send Messages) when the
+    /// <c>Move</c> action changes.
+    /// </summary>
+    public void OnMove(InputValue value)
+    {
+        if (!IsOwner) return;
+        _inputMove = value.Get<Vector2>();
+    }
+
+    /// <summary>
+    /// Called by <see cref="PlayerInput"/> (Send Messages) when the
+    /// <c>Dash</c> action is pressed.
+    /// </summary>
+    public void OnDash(InputValue value)
+    {
+        if (!IsOwner || !value.isPressed) return;
+        _dashPressed = true;
+    }
+
+    /// <summary>
+    /// Called by <see cref="PlayerInput"/> (Send Messages) when the
+    /// <c>Collect</c> action is pressed.
+    /// </summary>
+    public void OnCollect(InputValue value)
+    {
+        if (!IsOwner || !value.isPressed) return;
+        _collectPressed = true;
+    }
+
+    /// <summary>
+    /// Called by <see cref="PlayerInput"/> (Send Messages) when the
+    /// <c>Drop</c> action is pressed.
+    /// </summary>
+    public void OnDrop(InputValue value)
+    {
+        if (!IsOwner || !value.isPressed) return;
+        _dropPressed = true;
+    }
+
+    // ====================================================================
+    // Public – Mobile Input
+    // ====================================================================
+
+    /// <summary>Sets the movement direction from the virtual joystick.</summary>
     public void SetMoveVector(Vector2 direction) => _mobileMoveVector = direction;
 
     /// <summary>Called by the mobile Dash button.</summary>
@@ -249,45 +316,10 @@ public class PlayerMovement : NetworkBehaviour
     public void OnDropButtonClicked() => _dropPressed = true;
 
     // ====================================================================
-    // Public – New Input System Bindings (via PlayerInput SendMessage/UnityEvents)
+    // Public – Teleport
     // ====================================================================
 
-    /// <summary>Bound to the "Move" action; called by <see cref="PlayerInput"/>.</summary>
-    public void OnMove(InputAction.CallbackContext ctx)
-    {
-        if (!IsOwner) return;
-        _inputMove = ctx.ReadValue<Vector2>();
-    }
-
-    /// <summary>Bound to the "Dash" action.</summary>
-    public void OnDash(InputAction.CallbackContext ctx)
-    {
-        if (!IsOwner || !ctx.performed) return;
-        _dashPressed = true;
-    }
-
-    /// <summary>Bound to the "Collect" action.</summary>
-    public void OnCollect(InputAction.CallbackContext ctx)
-    {
-        if (!IsOwner || !ctx.performed) return;
-        _collectPressed = true;
-    }
-
-    /// <summary>Bound to the "Drop" action.</summary>
-    public void OnDrop(InputAction.CallbackContext ctx)
-    {
-        if (!IsOwner || !ctx.performed) return;
-        _dropPressed = true;
-    }
-
-    // ====================================================================
-    // Public – Teleport (called via ClientRpc from GameManager)
-    // ====================================================================
-
-    /// <summary>
-    /// Teleports this player to <paramref name="newPosition"/> and forces the camera to snap.
-    /// Disables and re-enables the <see cref="CharacterController"/> as required by Unity.
-    /// </summary>
+    /// <summary>Teleports the player and snaps the camera. Called via ClientRpc.</summary>
     [ClientRpc]
     public void TeleportPlayerClientRpc(Vector3 newPosition)
     {
@@ -298,21 +330,20 @@ public class PlayerMovement : NetworkBehaviour
         if (!IsOwner) return;
 
         foreach (var cam in FindObjectsByType<CameraFollow>(FindObjectsInactive.Exclude))
-        {
             if (cam.Target == transform) cam.ForcePosition();
-        }
 
         FindAnyObjectByType<SplitScreenManager>()?.ResetCameraForPlayer(this);
     }
 
     // ====================================================================
-    // Public – Server-Side Hit Processing
+    // Public – Server-Side Hit
     // ====================================================================
 
     /// <summary>
-    /// Drops all carried coins and starts the invulnerability window.
-    /// Must be called on the server; returns the number of coins dropped.
+    /// Drops all carried coins and starts invulnerability.
+    /// Must be called on the server.
     /// </summary>
+    /// <returns>Number of coins dropped.</returns>
     public int ReceiveHitAndDropCoins_Server(CoinSpawner coinSpawner)
     {
         if (!IsServer || IsInvulnerable.Value) return 0;
@@ -322,12 +353,11 @@ public class PlayerMovement : NetworkBehaviour
         UpdateMoveSpeed();
 
         if (dropped > 0)
-            coinSpawner.SpawnDroppedCoins_Server(transform.position, dropped, dropDistance);
+            coinSpawner.SpawnDroppedCoinsDirectional_Server(transform.position, transform.forward, dropped);
 
         IsInvulnerable.Value = true;
         StartCoroutine(InvulnerabilityTimerCoroutine());
         StartInvulnerabilityVisualsClientRpc();
-
         return dropped;
     }
 
@@ -335,27 +365,23 @@ public class PlayerMovement : NetworkBehaviour
     // Public – Utility
     // ====================================================================
 
-    /// <summary>Returns the locally tracked dash cooldown value for UI display.</summary>
+    /// <summary>Returns the locally tracked dash cooldown for UI display.</summary>
     public float GetLocalDashCooldown() => _localDashCooldown;
 
-    /// <summary>
-    /// Recalculates <see cref="moveSpeed"/> based on the number of coins currently carried,
-    /// clamped to a minimum of 1 unit/s.
-    /// </summary>
+    /// <summary>Recalculates <see cref="moveSpeed"/> based on coins carried.</summary>
     public void UpdateMoveSpeed()
-    {
-        moveSpeed = Mathf.Max(1f, _baseMoveSpeed - coinsCarried.Value * speedReductionPerCoin);
-    }
+        => moveSpeed = Mathf.Max(1f, _baseMoveSpeed - coinsCarried.Value * speedReductionPerCoin);
 
     // ====================================================================
     // Private – Input Handling
     // ====================================================================
 
-    private void HandlePlayerInput()
+    private void HandleInput()
     {
+        if (_gameManager != null && (!_gameManager.gameStarted.Value || _gameManager.isPaused.Value)) return;
         if (!IsRunner.Value || _characterController == null) return;
 
-        // Prefer virtual joystick; fall back to the New Input System vector.
+        // Mobile joystick overrides Input System when active.
         float h = _mobileMoveVector.magnitude > 0.1f ? _mobileMoveVector.x : _inputMove.x;
         float v = _mobileMoveVector.magnitude > 0.1f ? _mobileMoveVector.y : _inputMove.y;
 
@@ -365,14 +391,11 @@ public class PlayerMovement : NetworkBehaviour
         _characterController.Move(move * moveSpeed * Time.deltaTime);
 
         if (move != Vector3.zero)
-        {
             transform.rotation = Quaternion.Slerp(
                 transform.rotation,
                 Quaternion.LookRotation(move),
                 rotationSpeed * Time.deltaTime);
-        }
 
-        // Collect.
         if (_collectPressed)
         {
             if (_currentNearbyCoin != null && _currentNearbyCoin.IsSpawned)
@@ -381,11 +404,9 @@ public class PlayerMovement : NetworkBehaviour
                 _currentNearbyCoin = null;
         }
 
-        // Drop.
         if (_dropPressed && coinsCarried.Value > 0)
             DropCoinServerRpc();
 
-        // Dash.
         if (_dashPressed && DashCooldownRemaining.Value <= 0f && !_isDashing)
         {
             _localDashCooldown = DashCooldownDuration;
@@ -393,7 +414,6 @@ public class PlayerMovement : NetworkBehaviour
             DashServerRpc(dir);
         }
 
-        // Consume all input flags in one place.
         _dashPressed = false;
         _collectPressed = false;
         _dropPressed = false;
@@ -402,16 +422,14 @@ public class PlayerMovement : NetworkBehaviour
     private void ApplyGravity()
     {
         if (_characterController == null) return;
-
         _verticalVelocity = _characterController.isGrounded
             ? -2f
             : _verticalVelocity + gravity * Time.deltaTime;
-
-        _characterController.Move(new Vector3(0f, _verticalVelocity, 0f) * Time.deltaTime);
+        _characterController.Move(Vector3.up * _verticalVelocity * Time.deltaTime);
     }
 
     // ====================================================================
-    // Private – Coin ServerRpcs
+    // Private – Coin RPCs
     // ====================================================================
 
     [ServerRpc]
@@ -426,18 +444,17 @@ public class PlayerMovement : NetworkBehaviour
         _isCollecting = true;
         yield return new WaitForSeconds(collectionDuration);
 
-        coinRef.TryGet(out NetworkObject coinNetObj);
-        if (coinNetObj != null && coinNetObj.IsSpawned)
+        coinRef.TryGet(out NetworkObject netObj);
+        if (netObj != null && netObj.IsSpawned)
         {
-            var coin = coinNetObj.GetComponent<Coin>();
+            var coin = netObj.GetComponent<Coin>();
             if (coin != null)
             {
                 _gameManager?.AddScoreServerRpc(coin.scoreValue);
                 coinsCarried.Value++;
-                coinNetObj.Despawn();
+                netObj.Despawn();
             }
         }
-
         _isCollecting = false;
     }
 
@@ -445,23 +462,19 @@ public class PlayerMovement : NetworkBehaviour
     private void DropCoinServerRpc()
     {
         if (coinsCarried.Value <= 0) return;
-
         _gameManager?.AddScoreServerRpc(-1);
         coinsCarried.Value--;
-
-        Vector3 dropPos = transform.position - transform.forward * dropDistance;
-        _coinSpawner?.SpawnSingleCoinServerRpc(dropPos, Quaternion.identity);
+        _coinSpawner?.SpawnDroppedCoinsDirectional_Server(transform.position, transform.forward, 1);
     }
 
     // ====================================================================
-    // Private – Dash
+    // Private – Dash RPCs
     // ====================================================================
 
     [ServerRpc]
     private void DashServerRpc(Vector3 direction)
     {
         if (_isDashing || DashCooldownRemaining.Value > 0f) return;
-
         DashCooldownRemaining.Value = DashCooldownDuration;
         DashClientRpc(direction, DashCooldownDuration);
     }
@@ -476,16 +489,13 @@ public class PlayerMovement : NetworkBehaviour
     private IEnumerator DashCoroutine(Vector3 direction)
     {
         _isDashing = true;
-
-        float dashSpeed = (moveSpeed * DashDistanceMultiplier) / DashDuration;
-        float endTime = Time.time + DashDuration;
-
-        while (Time.time < endTime)
+        float speed = (moveSpeed * DashDistanceMultiplier) / DashDuration;
+        float end = Time.time + DashDuration;
+        while (Time.time < end)
         {
-            _characterController.Move(direction * dashSpeed * Time.deltaTime);
+            _characterController.Move(direction * speed * Time.deltaTime);
             yield return null;
         }
-
         _isDashing = false;
     }
 
@@ -506,14 +516,12 @@ public class PlayerMovement : NetworkBehaviour
     private IEnumerator FlashVisualsCoroutine(float duration)
     {
         if (meshRenderer == null) yield break;
-
         float end = Time.time + duration;
         while (Time.time < end)
         {
             meshRenderer.enabled = !meshRenderer.enabled;
             yield return new WaitForSeconds(0.1f);
         }
-
         meshRenderer.enabled = true;
     }
 
@@ -521,6 +529,7 @@ public class PlayerMovement : NetworkBehaviour
     // Private – NetworkVariable Callbacks
     // ====================================================================
 
+    /// <summary>Change size of the bagpack based on coins carried.</summary>
     private void OnCoinsCarriedChanged(int previous, int current)
     {
         UpdateBackpackModel();
@@ -548,39 +557,21 @@ public class PlayerMovement : NetworkBehaviour
         if (IsOwner && other.CompareTag("Coin")
             && _currentNearbyCoin != null
             && _currentNearbyCoin.gameObject == other.gameObject)
-        {
             _currentNearbyCoin = null;
-        }
     }
 
     // ====================================================================
-    // Private – Backpack Model
+    // Private – Backpack
     // ====================================================================
 
     private void UpdateBackpackModel()
     {
         if (backpackTransform == null) return;
-
-        if (coinsCarried.Value == 0)
-        {
-            backpackTransform.localScale = initialBackpackScale;
-            return;
-        }
-
-        int index = Mathf.Clamp(coinsCarried.Value - 1, 0, backpackScales.Length - 1);
-        backpackTransform.localScale = backpackScales[index];
+        if (coinsCarried.Value == 0) { backpackTransform.localScale = initialBackpackScale; return; }
+        int idx = Mathf.Clamp(coinsCarried.Value - 1, 0, backpackScales.Length - 1);
+        backpackTransform.localScale = backpackScales[idx];
     }
 
-    private void CalculateProgressionFactor()
-    {
-        _coinsPerLevel = Mathf.Max(1f, (float)_scoreToWin / MaxBackpackLevels);
-    }
-
-    /// <summary>
-    /// Procedurally fills <see cref="backpackScales"/> with evenly interpolated
-    /// scale values between the initial small size and the maximum full-backpack size.
-    /// Called once in <see cref="Awake"/>; existing non-zero values are preserved.
-    /// </summary>
     private void InitialiseBackpackScales()
     {
         if (backpackScales == null || backpackScales.Length < MaxBackpackLevels)
@@ -594,4 +585,52 @@ public class PlayerMovement : NetworkBehaviour
             backpackScales[i] = new Vector3(s, h, s);
         }
     }
+
+#if UNITY_EDITOR
+    // ====================================================================
+    // Editor Gizmos
+    // ====================================================================
+
+    /// <summary>
+    /// Draws the coin drop fan in the Scene view when this player is selected.
+    /// Parameters are read from the scene's <see cref="CoinSpawner"/>; falls back
+    /// to the hardcoded defaults if no spawner is found.
+    /// </summary>
+    private void OnDrawGizmosSelected()
+    {
+        var spawner = FindAnyObjectByType<CoinSpawner>();
+        float spread = spawner != null ? spawner.dropSpreadAngle : 55f;
+        float minDist = spawner != null ? spawner.dropMinDistance : 0.6f;
+        float maxDist = spawner != null ? spawner.dropMaxDistance : 3.5f;
+
+        Vector3 origin = transform.position + Vector3.up * 0.1f;
+        Vector3 behindDir = -transform.forward;
+
+        UnityEngine.Gizmos.color = new Color(1f, 0.85f, 0.1f, 0.9f);
+
+        // Left and right boundary rays.
+        Vector3 leftEdge = Quaternion.AngleAxis(-spread, Vector3.up) * behindDir;
+        Vector3 rightEdge = Quaternion.AngleAxis(spread, Vector3.up) * behindDir;
+
+        UnityEngine.Gizmos.DrawLine(origin + leftEdge * minDist, origin + leftEdge * maxDist);
+        UnityEngine.Gizmos.DrawLine(origin + rightEdge * minDist, origin + rightEdge * maxDist);
+
+        // Inner and outer arcs.
+        DrawDropArc(origin, behindDir, spread, minDist);
+        DrawDropArc(origin, behindDir, spread, maxDist);
+    }
+
+    private static void DrawDropArc(Vector3 center, Vector3 baseDir, float halfAngle, float radius)
+    {
+        const int Steps = 24;
+        float step = halfAngle * 2f / Steps;
+        Vector3 prev = center + Quaternion.AngleAxis(-halfAngle, Vector3.up) * baseDir * radius;
+        for (int i = 1; i <= Steps; i++)
+        {
+            Vector3 next = center + Quaternion.AngleAxis(-halfAngle + step * i, Vector3.up) * baseDir * radius;
+            UnityEngine.Gizmos.DrawLine(prev, next);
+            prev = next;
+        }
+    }
+#endif
 }

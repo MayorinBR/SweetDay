@@ -10,7 +10,7 @@ using UnityEngine.InputSystem;
 public class LocalSpawner : NetworkBehaviour
 {
     // ====================================================================
-    // Inspector Fields
+    // Inspector
     // ====================================================================
 
     [SerializeField, Tooltip("Prefab for the Runner player type.")]
@@ -20,39 +20,45 @@ public class LocalSpawner : NetworkBehaviour
     private GameObject guardPrefab;
 
     // ====================================================================
-    // Private State
+    // Private
     // ====================================================================
 
-    private readonly List<GameObject> _localPlayers = new List<GameObject>();
+    private readonly List<GameObject> _localRunners = new List<GameObject>();
+    private readonly List<GameObject> _localCatchers = new List<GameObject>();
 
     // ====================================================================
     // Public API
     // ====================================================================
 
     /// <summary>
-    /// Spawns split-screen companion players (indices 1+) on the server.
-    /// Player 0 is already spawned by <see cref="GameManager.SpawnAllPlayersAndStartGame"/>.
+    /// Spawns all additional local Runner and Catcher players.
+    /// Runner 0 and (when <see cref="GameSettings.IsCatcher"/> is true) Catcher 0
+    /// are handled by <see cref="GameManager"/>; this method spawns the rest.
+    /// Server-only.
     /// </summary>
     public void SpawnLocalPlayers()
     {
         if (!IsServer) return;
 
-        Debug.Log($"[LocalSpawner] SpawnLocalPlayers – LocalPlayerCount: {GameSettings.LocalPlayerCount}");
+        Debug.Log($"[LocalSpawner] SpawnLocalPlayers – " +
+                  $"Runners: {GameSettings.LocalRunnerCount}, " +
+                  $"Catchers: {GameSettings.LocalCatcherCount}");
 
         CleanupLocalPlayers();
 
-        for (int i = 1; i < GameSettings.LocalPlayerCount; i++)
-            SpawnAdditionalLocalPlayer(i);
+        // Additional runners (Runner 0 already spawned by GameManager).
+        for (int i = 1; i < GameSettings.LocalRunnerCount; i++)
+            SpawnRunner(i);
 
-        Debug.Log($"[LocalSpawner] Additional local players spawned: {_localPlayers.Count}");
+        // Local catchers — skip index 0 when the host is already a catcher.
+        int catcherStart = GameSettings.IsCatcher ? 1 : 0;
+        for (int i = catcherStart; i < GameSettings.LocalCatcherCount; i++)
+            SpawnCatcher(i);
 
         StartCoroutine(NotifySplitScreenManager());
     }
 
-    /// <summary>
-    /// Despawns and destroys all split-screen companion players managed by this spawner.
-    /// Should only be called on the server.
-    /// </summary>
+    /// <summary>Despawns and destroys all local companion players. Server-only.</summary>
     public void DespawnLocalPlayers()
     {
         if (!IsServer) return;
@@ -60,103 +66,98 @@ public class LocalSpawner : NetworkBehaviour
     }
 
     // ====================================================================
-    // Private – Spawning
+    // Private – Spawn Helpers
     // ====================================================================
 
-    private void SpawnAdditionalLocalPlayer(int playerIndex)
+    /// <summary>Spawns one additional local Runner at <paramref name="runnerIndex"/>.</summary>
+    private void SpawnRunner(int runnerIndex)
     {
-        PlayerType hostType = GameSettings.IsCatcher ? PlayerType.Catcher : PlayerType.Runner;
-        GameObject prefab = hostType == PlayerType.Runner ? runnerPrefab : guardPrefab;
+        Vector3 pos = Vector3.zero;
+        if (GameManager.Instance?.playerSpawnPoints?.Length > 0)
+            pos = GameManager.Instance.playerSpawnPoints[
+                runnerIndex % GameManager.Instance.playerSpawnPoints.Length].position;
 
-        // Choose a spawn point, cycling through available slots.
-        Vector3 spawnPos = Vector3.zero;
-        if (GameManager.Instance != null)
-        {
-            Transform[] points = hostType == PlayerType.Runner
-                ? GameManager.Instance.playerSpawnPoints
-                : GameManager.Instance.guardSpawnPoints;
+        GameObject obj = Instantiate(runnerPrefab, pos, Quaternion.identity);
 
-            if (points != null && points.Length > 0)
-                spawnPos = points[playerIndex % points.Length].position;
-        }
-
-        GameObject newPlayer = Instantiate(prefab, spawnPos, Quaternion.identity);
-
-        // Spawn on the network, owned by the local (host) client.
-        if (newPlayer.TryGetComponent<NetworkObject>(out var netObj))
+        if (obj.TryGetComponent<NetworkObject>(out var netObj))
             netObj.SpawnAsPlayerObject(NetworkManager.Singleton.LocalClientId, false);
 
-        // Assign display ID and name before assigning controls.
-        int displayId = playerIndex + 1;
-        if (newPlayer.TryGetComponent<PlayerMovement>(out var pm))
+        int displayId = runnerIndex + 1;
+        if (obj.TryGetComponent<PlayerMovement>(out var pm))
         {
             pm.playerNumber.Value = displayId;
-            newPlayer.name = "Runner_P" + displayId;
+            obj.name = "Runner_P" + displayId;
         }
-        else if (newPlayer.TryGetComponent<Guard>(out var g))
+
+        // Global device index = runner's local index.
+        StartCoroutine(AssignControlsNextFrame(obj, globalIndex: runnerIndex));
+        _localRunners.Add(obj);
+    }
+
+    /// <summary>Spawns one local Catcher at <paramref name="catcherIndex"/>.</summary>
+    private void SpawnCatcher(int catcherIndex)
+    {
+        Vector3 pos = Vector3.zero;
+        if (GameManager.Instance?.guardSpawnPoints?.Length > 0)
+            pos = GameManager.Instance.guardSpawnPoints[
+                catcherIndex % GameManager.Instance.guardSpawnPoints.Length].position;
+
+        GameObject obj = Instantiate(guardPrefab, pos, Quaternion.identity);
+
+        if (obj.TryGetComponent<NetworkObject>(out var netObj))
+            netObj.SpawnAsPlayerObject(NetworkManager.Singleton.LocalClientId, false);
+
+        int displayId = catcherIndex + 1;
+        if (obj.TryGetComponent<Guard>(out var g))
         {
             g.playerNumber.Value = displayId;
-            newPlayer.name = "Catcher_P" + displayId;
+            obj.name = "Catcher_P" + displayId;
         }
 
-        // Defer control assignment to the next frame so PlayerInput is fully initialised.
-        StartCoroutine(AssignControlsNextFrame(newPlayer, playerIndex));
-
-        _localPlayers.Add(newPlayer);
+        // Global device index = runners consumed + catcher local index.
+        int globalIndex = GameSettings.LocalRunnerCount + catcherIndex;
+        StartCoroutine(AssignControlsNextFrame(obj, globalIndex));
+        _localCatchers.Add(obj);
     }
 
     // ====================================================================
     // Private – Control Assignment
     // ====================================================================
 
-    private IEnumerator AssignControlsNextFrame(GameObject player, int playerIndex)
+    private IEnumerator AssignControlsNextFrame(GameObject player, int globalIndex)
     {
-        yield return null; // Wait one frame for PlayerInput initialisation.
+        yield return null; // Wait one frame for PlayerInput to initialise.
 
         EnsureControlSetupManager();
 
         if (ControlSetupManager.Instance != null)
-            ControlSetupManager.Instance.AssignControlScheme(player, playerIndex);
+            ControlSetupManager.Instance.AssignControlScheme(player, globalIndex);
         else
-            FallbackControlSetup(player, playerIndex);
+            FallbackControlSetup(player, globalIndex);
     }
 
     /// <summary>
-    /// Basic control assignment used when <see cref="ControlSetupManager"/> is unavailable.
+    /// Basic device assignment used when <see cref="ControlSetupManager"/> is unavailable.
     /// </summary>
-    private void FallbackControlSetup(GameObject player, int playerIndex)
+    private void FallbackControlSetup(GameObject player, int globalIndex)
     {
         if (!player.TryGetComponent<PlayerInput>(out var pInput)) return;
 
         var gamepads = Gamepad.all;
-
-        if (playerIndex == 0)
-        {
-            if (Keyboard.current != null)
-                pInput.SwitchCurrentControlScheme("Keyboard", Keyboard.current, Mouse.current);
-            else if (gamepads.Count > 0)
-                pInput.SwitchCurrentControlScheme("Gamepad", gamepads[0]);
-            else
-                Debug.LogWarning("[LocalSpawner] Player 1: no input device available.");
-        }
-        else if (playerIndex < gamepads.Count)
-        {
-            pInput.SwitchCurrentControlScheme("Gamepad", gamepads[playerIndex]);
-        }
+        if (globalIndex == 0 && Keyboard.current != null)
+            pInput.SwitchCurrentControlScheme(ControlSetupManager.FallbackSchemeKeyboard, Keyboard.current, Mouse.current);
+        else if (globalIndex - 1 < gamepads.Count)
+            pInput.SwitchCurrentControlScheme(ControlSetupManager.FallbackSchemeGamepad, gamepads[Mathf.Max(0, globalIndex - 1)]);
         else
-        {
-            Debug.LogWarning($"[LocalSpawner] Player {playerIndex + 1}: no dedicated input device found.");
-        }
+            Debug.LogWarning($"[LocalSpawner] No input device found for global index {globalIndex}.");
     }
 
-    /// <summary>Creates a <see cref="ControlSetupManager"/> GameObject if one does not already exist.</summary>
     private static void EnsureControlSetupManager()
     {
         if (ControlSetupManager.Instance != null) return;
-
-        var managerObj = new GameObject("ControlSetupManager");
-        managerObj.AddComponent<ControlSetupManager>();
-        DontDestroyOnLoad(managerObj);
+        var go = new GameObject("ControlSetupManager");
+        go.AddComponent<ControlSetupManager>();
+        DontDestroyOnLoad(go);
         Debug.Log("[LocalSpawner] ControlSetupManager created automatically.");
     }
 
@@ -166,39 +167,40 @@ public class LocalSpawner : NetworkBehaviour
 
     private void CleanupLocalPlayers()
     {
-        foreach (var player in _localPlayers)
+        DespawnList(_localRunners);
+        DespawnList(_localCatchers);
+    }
+
+    private static void DespawnList(List<GameObject> list)
+    {
+        foreach (var obj in list)
         {
-            if (player == null) continue;
-
-            if (player.TryGetComponent<NetworkObject>(out var n) && n.IsSpawned)
-                n.Despawn();
-
-            Destroy(player);
+            if (obj == null) continue;
+            if (obj.TryGetComponent<NetworkObject>(out var n) && n.IsSpawned) n.Despawn();
+            Destroy(obj);
         }
-        _localPlayers.Clear();
+        list.Clear();
     }
 
     private IEnumerator NotifySplitScreenManager()
     {
-        yield return null; // Allow all spawned objects to be registered.
-
-        SplitScreenManager ssm = FindAnyObjectByType<SplitScreenManager>();
-        if (ssm != null)
-            ssm.RefreshCameras();
-        else
-            Debug.LogWarning("[LocalSpawner] SplitScreenManager not found in scene.");
+        yield return null;
+        FindAnyObjectByType<SplitScreenManager>()?.RefreshCameras();
     }
 
     // ====================================================================
     // Unity Lifecycle
     // ====================================================================
 
-    private void OnDestroy()
+    public override void OnDestroy()
     {
+        base.OnDestroy();
         CleanupLocalPlayers();
 
         if (ControlSetupManager.Instance == null) return;
-        for (int i = 0; i < GameSettings.LocalPlayerCount; i++)
+
+        int total = GameSettings.LocalRunnerCount + GameSettings.LocalCatcherCount;
+        for (int i = 0; i < total; i++)
             ControlSetupManager.Instance.ReleasePlayerDevice(i);
     }
 }

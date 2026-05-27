@@ -1,11 +1,13 @@
-using System.Collections;
+Ôªøusing System.Collections;
 using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 
 /// <summary>
 /// Server-authoritative manager for the interactive pressure-plate buttons scattered
-/// across the map.
+/// across the map.  Works with any <see cref="MonoBehaviour"/> that implements
+/// <see cref="IButtonZone"/>, including <see cref="ButtonSpawner"/> and
+/// <see cref="DuoButtonSpawner"/>.
 /// </summary>
 public class ButtonManager : NetworkBehaviour
 {
@@ -27,14 +29,18 @@ public class ButtonManager : NetworkBehaviour
     public LayerMask obstructionLayers;
 
     [Header("References")]
-    /// <summary>All <see cref="ButtonSpawner"/> instances managed by this component.</summary>
-    public List<ButtonSpawner> allButtons = new List<ButtonSpawner>();
+    /// <summary>
+    /// All button zones managed by this component.
+    /// Accepts any <see cref="MonoBehaviour"/> that implements <see cref="IButtonZone"/>
+    /// ‚Äî drag in <see cref="ButtonSpawner"/> or <see cref="DuoButtonSpawner"/> instances.
+    /// </summary>
+    public List<MonoBehaviour> allButtons = new List<MonoBehaviour>();
 
     // ====================================================================
     // Private State
     // ====================================================================
 
-    private readonly List<ButtonSpawner> _inactivePool = new List<ButtonSpawner>();
+    private readonly List<MonoBehaviour> _inactivePool = new List<MonoBehaviour>();
     private int _currentlyActive;
     private bool _isInitialized;
 
@@ -49,11 +55,7 @@ public class ButtonManager : NetworkBehaviour
 
         if (!IsServer) return;
 
-        Debug.Log($"[ButtonManager] OnNetworkSpawn ÅE{allButtons.Count} buttons registered.");
-
-        // Defer initialisation until all buttons are fully spawned on the network.
-        // This fixes the "Button X is not spawned yet!" warnings caused by trying to
-        // read NetworkObjectId before Netcode has completed the spawn cycle.
+        Debug.Log($"[ButtonManager] OnNetworkSpawn ‚Äî {allButtons.Count} buttons registered.");
         StartCoroutine(WaitForButtonsThenInitialize());
     }
 
@@ -62,41 +64,35 @@ public class ButtonManager : NetworkBehaviour
     // ====================================================================
 
     /// <summary>
-    /// Called by a <see cref="ButtonSpawner"/> when a runner successfully activates it.
-    /// Deactivates the button, returns it to the inactive pool, and schedules a
-    /// replacement spawn after <see cref="respawnDelay"/> seconds.
+    /// Called by an <see cref="IButtonZone"/> when a player successfully activates it.
+    /// Deactivates the zone, returns it to the inactive pool, and schedules a replacement.
     /// Server-only.
     /// </summary>
-    public void OnButtonCompleted(ButtonSpawner button)
+    public void OnButtonCompleted(MonoBehaviour button)
     {
         if (!IsServer)
         {
-            Debug.LogError("[ButtonManager] OnButtonCompleted called on a client ÅEthis should only run on the server.");
+            Debug.LogError("[ButtonManager] OnButtonCompleted called on a client ‚Äî server only.");
             return;
         }
 
         if (button == null)
         {
-            Debug.LogError("[ButtonManager] OnButtonCompleted received a null ButtonSpawner.");
+            Debug.LogError("[ButtonManager] OnButtonCompleted received a null button.");
             return;
         }
 
         _currentlyActive--;
-
         DeactivateButton(button);
 
         if (!_inactivePool.Contains(button))
             _inactivePool.Add(button);
 
-        Debug.Log($"[ButtonManager] Button '{button.name}' completed. Active: {_currentlyActive}, Pool: {_inactivePool.Count}");
-
+        Debug.Log($"[ButtonManager] '{button.name}' completed. Active: {_currentlyActive}, Pool: {_inactivePool.Count}");
         StartCoroutine(RespawnAfterDelay());
     }
 
-    /// <summary>
-    /// Attempts to activate a random button from the inactive pool.
-    /// Skips positions that are physically obstructed.  Server-only.
-    /// </summary>
+    /// <summary>Attempts to activate a random button from the inactive pool. Server-only.</summary>
     public void TrySpawnRandomButton()
     {
         if (!IsServer)
@@ -117,16 +113,11 @@ public class ButtonManager : NetworkBehaviour
     }
 
     // ====================================================================
-    // Private ÅEInitialization
+    // Private ‚Äî Initialization
     // ====================================================================
 
-    /// <summary>
-    /// Waits until every button in <see cref="allButtons"/> is network-spawned,
-    /// then builds the inactive pool and kicks off the initial spawn wave.
-    /// </summary>
     private IEnumerator WaitForButtonsThenInitialize()
     {
-        // Wait up to 10 seconds for all buttons to finish spawning.
         float timeout = 10f;
         float elapsed = 0f;
 
@@ -135,34 +126,38 @@ public class ButtonManager : NetworkBehaviour
             bool allSpawned = true;
             foreach (var btn in allButtons)
             {
-                if (btn == null || !btn.IsSpawned) { allSpawned = false; break; }
+                var netObj = btn != null ? btn.GetComponent<NetworkObject>() : null;
+                if (netObj == null || !netObj.IsSpawned) { allSpawned = false; break; }
             }
-
             if (allSpawned) break;
 
             elapsed += 0.25f;
             yield return new WaitForSeconds(0.25f);
         }
 
-        // Build the pool from whatever buttons successfully spawned.
         _inactivePool.Clear();
         _currentlyActive = 0;
 
         foreach (var btn in allButtons)
         {
             if (btn == null) { Debug.LogError("[ButtonManager] Null entry in allButtons list."); continue; }
-            if (!btn.IsSpawned) { Debug.LogWarning($"[ButtonManager] '{btn.name}' still not spawned after timeout ÅEskipping."); continue; }
+
+            var netObj = btn.GetComponent<NetworkObject>();
+            if (netObj == null || !netObj.IsSpawned)
+            {
+                Debug.LogWarning($"[ButtonManager] '{btn.name}' not spawned after timeout ‚Äî skipping.");
+                continue;
+            }
 
             _inactivePool.Add(btn);
             btn.gameObject.SetActive(false);
-            btn.ResetButton();
-            DeactivateButtonClientRpc(btn.NetworkObjectId);
+            (btn as IButtonZone)?.ResetButton();
+            DeactivateButtonClientRpc(netObj.NetworkObjectId);
         }
 
         _isInitialized = true;
         Debug.Log($"[ButtonManager] Initialized. Pool size: {_inactivePool.Count}");
 
-        // Small additional delay to let the network stabilise before the first spawns.
         yield return new WaitForSeconds(2f);
 
         for (int i = 0; i < activeButtonsAtOnce; i++)
@@ -174,13 +169,9 @@ public class ButtonManager : NetworkBehaviour
     }
 
     // ====================================================================
-    // Private ÅESpawn / Deactivate
+    // Private ‚Äî Spawn / Deactivate
     // ====================================================================
 
-    /// <summary>
-    /// Attempts to pick a non-obstructed button from the pool and activate it.
-    /// Retries up to <c>maxAttempts</c> times before giving up.
-    /// </summary>
     private IEnumerator SpawnSequence()
     {
         int maxAttempts = Mathf.Min(10, _inactivePool.Count * 2);
@@ -188,13 +179,9 @@ public class ButtonManager : NetworkBehaviour
         for (int attempt = 0; attempt < maxAttempts && _inactivePool.Count > 0; attempt++)
         {
             int index = Random.Range(0, _inactivePool.Count);
-            ButtonSpawner candidate = _inactivePool[index];
+            MonoBehaviour candidate = _inactivePool[index];
 
-            if (candidate == null)
-            {
-                _inactivePool.RemoveAt(index);
-                continue;
-            }
+            if (candidate == null) { _inactivePool.RemoveAt(index); continue; }
 
             bool blocked = Physics.CheckSphere(candidate.transform.position, checkRadius, obstructionLayers);
             if (!blocked)
@@ -203,8 +190,10 @@ public class ButtonManager : NetworkBehaviour
                 _currentlyActive++;
 
                 candidate.gameObject.SetActive(true);
-                candidate.ResetButton();
-                ActivateButtonClientRpc(candidate.NetworkObjectId);
+                (candidate as IButtonZone)?.ResetButton();
+
+                var netObj = candidate.GetComponent<NetworkObject>();
+                if (netObj != null) ActivateButtonClientRpc(netObj.NetworkObjectId);
 
                 Debug.Log($"[ButtonManager] Activated '{candidate.name}'. Active: {_currentlyActive}");
                 yield break;
@@ -216,11 +205,13 @@ public class ButtonManager : NetworkBehaviour
         Debug.LogWarning("[ButtonManager] Failed to find a valid spawn position after all attempts.");
     }
 
-    private void DeactivateButton(ButtonSpawner button)
+    private void DeactivateButton(MonoBehaviour button)
     {
         button.gameObject.SetActive(false);
-        button.ResetButton();
-        DeactivateButtonClientRpc(button.NetworkObjectId);
+        (button as IButtonZone)?.ResetButton();
+
+        var netObj = button.GetComponent<NetworkObject>();
+        if (netObj != null) DeactivateButtonClientRpc(netObj.NetworkObjectId);
     }
 
     private IEnumerator RespawnAfterDelay()
@@ -237,26 +228,26 @@ public class ButtonManager : NetworkBehaviour
     [ClientRpc]
     private void ActivateButtonClientRpc(ulong networkObjectId)
     {
-        if (IsServer) return; // Server already activated locally.
+        if (IsServer) return;
 
         if (!TryGetSpawnedObject(networkObjectId, out var netObj)) return;
 
         netObj.gameObject.SetActive(true);
-        netObj.GetComponent<ButtonSpawner>()?.ResetButton();
+        netObj.GetComponent<IButtonZone>()?.ResetButton();
     }
 
     /// <summary>Deactivates the button with the given <paramref name="networkObjectId"/> on all clients.</summary>
     [ClientRpc]
     private void DeactivateButtonClientRpc(ulong networkObjectId)
     {
-        if (IsServer) return; // Server already deactivated locally.
+        if (IsServer) return;
 
         if (TryGetSpawnedObject(networkObjectId, out var netObj))
             netObj.gameObject.SetActive(false);
     }
 
     // ====================================================================
-    // Private ÅEUtilities
+    // Private ‚Äî Utilities
     // ====================================================================
 
     private static bool TryGetSpawnedObject(ulong id, out NetworkObject result)

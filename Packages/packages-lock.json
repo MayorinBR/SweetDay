@@ -1,5 +1,14 @@
 {
   "dependencies": {
+    "com.tuatmcc.unityjoycon": {
+      "version": "https://github.com/tuatmcc/UnityJoyCon.git?path=Packages/com.tuatmcc.unityjoycon#v0.4.0",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {
+        "com.unity.inputsystem": "1.14.2"
+      },
+      "hash": "d7c86474ce991fe2167414a183abf47767aebc24"
+    },
     "com.unity.2d.sprite": {
       "version": "1.0.0",
       "depth": 0,
