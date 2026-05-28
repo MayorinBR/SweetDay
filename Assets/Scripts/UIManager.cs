@@ -32,6 +32,13 @@ public class UIManager : MonoBehaviour
     /// <summary>Panel shown at the end of a match.</summary>
     public GameObject endGamePanel;
 
+    [Header("End Game Buttons")]
+    /// <summary>Restart button inside the end-game panel. Host-only.</summary>
+    public UnityEngine.UI.Button endGameRestartButton;
+
+    /// <summary>Back-to-menu button inside the end-game panel. Visible to all.</summary>
+    public UnityEngine.UI.Button endGameMenuButton;
+
     /// <summary>Sprite used for each life icon.</summary>
     public Sprite lifeIconSprite;
 
@@ -112,6 +119,12 @@ public class UIManager : MonoBehaviour
     /// <summary>Root panel for the pause menu.</summary>
     public GameObject pausePanel;
 
+    /// <summary>
+    /// Optional on-screen pause button for mobile / touch devices.
+    /// Assign in the Inspector; no binding needed in the Input Action Asset.
+    /// </summary>
+    public UnityEngine.UI.Button pauseButton;
+
     /// <summary>Restart button — only visible for the host.</summary>
     public UnityEngine.UI.Button restartButton;
 
@@ -154,6 +167,15 @@ public class UIManager : MonoBehaviour
         if (virtualJoystickContainer != null) virtualJoystickContainer.SetActive(false);
         EnsureOverlayCanvas(countdownPanel, sortingOrder: 200);
         EnsureOverlayCanvas(playerLeftPanel, sortingOrder: 150);
+
+        if (pauseButton != null)
+            pauseButton.onClick.AddListener(OnPauseButtonPressed);
+
+        if (endGameRestartButton != null)
+            endGameRestartButton.onClick.AddListener(OnEndGameRestartClicked);
+
+        if (endGameMenuButton != null)
+            endGameMenuButton.onClick.AddListener(OnEndGameMenuClicked);
         if (countdownPanel != null) countdownPanel.SetActive(false);
         if (pausePanel != null) pausePanel.SetActive(false);
         if (playerLeftPanel != null) playerLeftPanel.SetActive(false);
@@ -347,6 +369,8 @@ public class UIManager : MonoBehaviour
             bg.color = result.didLocalPlayerWin
                 ? new Color(0.1f, 0.5f, 0.1f, 0.8f)
                 : new Color(0.5f, 0.1f, 0.1f, 0.8f);
+
+        RefreshEndGameButtons();
     }
 
     /// <summary>Shows the end-game panel with a plain message string.</summary>
@@ -369,6 +393,18 @@ public class UIManager : MonoBehaviour
             legacy.text = message;
             legacy.color = message.Contains("Victory") ? Color.green : Color.red;
         }
+
+        RefreshEndGameButtons();
+    }
+
+    /// <summary>Refreshes the end-game panel buttons after <see cref="ShowEndGamePanel"/> or <see cref="ShowSimpleEndGame"/>.</summary>
+    private void RefreshEndGameButtons()
+    {
+        bool isHost = Unity.Netcode.NetworkManager.Singleton?.IsHost ?? false;
+        if (endGameRestartButton != null)
+            endGameRestartButton.gameObject.SetActive(isHost);
+        if (endGameMenuButton != null)
+            endGameMenuButton.gameObject.SetActive(true);
     }
 
     /// <summary>Hides the end-game panel.</summary>
@@ -587,6 +623,29 @@ public class UIManager : MonoBehaviour
     // ====================================================================
     // Private – Pause Input
     // ====================================================================
+
+    /// <summary>Triggers a full in-place restart from the end-game panel. Host-only.</summary>
+    public void OnEndGameRestartClicked()
+    {
+        if (!(_gm is { } gm)) return;
+        gm.FullRestartGameServerRpc();
+    }
+
+    /// <summary>Returns to the main menu from the end-game panel.</summary>
+    public void OnEndGameMenuClicked()
+    {
+        NetworkConnectionManager.Instance?.Disconnect(goToMainMenu: true);
+    }
+
+    /// <summary>
+    /// Called by the on-screen <see cref="pauseButton"/> on mobile devices.
+    /// Toggles the pause state via <see cref="GameManager.SetPausedServerRpc"/>.
+    /// </summary>
+    public void OnPauseButtonPressed()
+    {
+        if (_gm == null || !_gm.gameStarted.Value) return;
+        _gm.SetPausedServerRpc(!_isPaused);
+    }
 
     /// <summary>
     /// Detects Escape (keyboard) or Start/Menu button (any gamepad) and

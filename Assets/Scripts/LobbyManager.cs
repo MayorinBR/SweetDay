@@ -2,6 +2,7 @@
 using TMPro;
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
@@ -78,6 +79,7 @@ public class LobbyManager : MonoBehaviour
 
     private void Start()
     {
+        StartCoroutine(CleanUpAfterGameSceneAsync());
         InitialiseButtons();
 
         SceneManager.sceneLoaded += OnSceneLoaded;
@@ -135,6 +137,10 @@ public class LobbyManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Shows the legacy lobby panel.
+    /// Routes to <see cref="ShowLobbySetupUI"/> when <see cref="lobbySetupPanel"/> is available.
+    /// </summary>
     /// <summary>
     /// Shows the lobby setup panel.  Kept for backwards compatibility with
     /// callers that pass <paramref name="isHost"/> and <paramref name="lobbyCode"/>;
@@ -318,4 +324,36 @@ public class LobbyManager : MonoBehaviour
         if (scene.name == NetworkConnectionManager.MenuSceneName)
             ShowMainMenuUI();
     }
+    // ====================================================================
+    // Private – Scene Transition Cleanup
+    // ====================================================================
+
+    /// <summary>
+    /// Called on every lobby entry to clear stale state left by the game scene.
+    /// <list type="bullet">
+    ///   <item><see cref="LocalPlayerManager.ClearAll"/> removes device registrations
+    ///   whose <see cref="UnityEngine.InputSystem.PlayerInput"/> objects were destroyed
+    ///   when the game scene unloaded, preventing input from being silently consumed.</item>
+    ///   <item>The <see cref="EventSystem"/> selection is cleared so that references
+    ///   to destroyed GameObjects do not block click/submit events.</item>
+    ///   <item>The cursor is unlocked in case the game scene left it confined.</item>
+    /// </list>
+    /// </summary>
+    private System.Collections.IEnumerator CleanUpAfterGameSceneAsync()
+    {
+        // Wait one frame so NGO finishes despawning game-scene NetworkObjects
+        // before clearing input state. Prevents PlayerInput instances from
+        // consuming UI events during the transitional frame.
+        yield return null;
+
+        LocalPlayerManager.Instance?.ClearAll();
+
+        if (EventSystem.current != null)
+            EventSystem.current.SetSelectedGameObject(null);
+
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
+    }
+
 }

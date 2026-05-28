@@ -409,6 +409,7 @@ public class GameManager : NetworkBehaviour
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
     public void ResetGameServerRpc() => ResetGame();
 
+
     // ====================================================================
     // Client RPCs
     // ====================================================================
@@ -666,7 +667,12 @@ public class GameManager : NetworkBehaviour
 
     [ClientRpc]
     private void StartCountdownClientRpc()
-        => UIManager.Instance?.ShowCountdown();
+    {
+        // UIManager.Instance may be null on late-joining clients;
+        // fall back to a scene search to guarantee the countdown shows.
+        var ui = UIManager.Instance ?? FindAnyObjectByType<UIManager>();
+        ui?.ShowCountdown();
+    }
 
     // ====================================================================
     // Pause
@@ -692,5 +698,58 @@ public class GameManager : NetworkBehaviour
     [ClientRpc]
     private void NotifyPlayerLeftClientRpc()
         => UIManager.Instance?.ShowPlayerLeftMessage();
+
+    /// <summary>
+    /// Performs a full in-place game restart without disconnecting any player.
+    /// Resets positions, coins, lives, timer and re-runs the countdown sequence.
+    /// Host-only; all clients participate via existing NetworkVariables and RPCs.
+    /// </summary>
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
+    public void FullRestartGameServerRpc()
+    {
+        if (!IsServer) return;
+        StartCoroutine(FullRestartSequence());
+    }
+
+    private System.Collections.IEnumerator FullRestartSequence()
+    {
+        HideEndGamePanelClientRpc();
+
+        // Block input while resetting.
+        gameStarted.Value = false;
+        isPaused.Value = false;
+        _gameEnded = false;
+
+        // Reset global state.
+        score.Value = 0;
+        playerLives.Value = InitialLives;
+        gameTimer.Value = GameDuration;
+
+        // Reset per-player state without despawning.
+        foreach (var pm in FindObjectsByType<PlayerMovement>(FindObjectsInactive.Exclude))
+        {
+            pm.coinsCarried.Value = 0;
+            pm.IsInvulnerable.Value = false;
+        }
+        foreach (var g in FindObjectsByType<Guard>(FindObjectsInactive.Exclude))
+        {
+            g.AttackCooldownRemaining.Value = 0f;
+        }
+
+        ResetAllPlayersPosition();
+
+        // Clear coins and button zones, then rebuild button pools.
+        DespawnAllCoins();
+
+        var bm = FindAnyObjectByType<ButtonManager>();
+        bm?.FullReset();
+        bm?.RespawnInitialButtons();
+
+        // One frame so all despawns settle before spawning new objects.
+        yield return null;
+
+        // Spawns coins, shows 3-2-1-Go, then sets gameStarted = true.
+        StartCoroutine(CountdownAndStart());
+    }
 
 }
