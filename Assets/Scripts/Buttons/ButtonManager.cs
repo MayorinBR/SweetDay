@@ -36,12 +36,23 @@ public class ButtonManager : NetworkBehaviour
     /// </summary>
     public List<MonoBehaviour> allButtons = new List<MonoBehaviour>();
 
+    /// <summary>
+    /// Duo-zone buttons managed in a separate pool from single buttons.
+    /// Drag in <see cref="DuoButtonSpawner"/> instances here.
+    /// </summary>
+    public List<MonoBehaviour> duoButtons = new List<MonoBehaviour>();
+
+    /// <summary>Maximum number of duo buttons active simultaneously.</summary>
+    public int activeDuoButtonsAtOnce = 2;
+
     // ====================================================================
     // Private State
     // ====================================================================
 
     private readonly List<MonoBehaviour> _inactivePool = new List<MonoBehaviour>();
+    private readonly List<MonoBehaviour> _inactiveDuoPool = new List<MonoBehaviour>();
     private int _currentlyActive;
+    private int _currentlyActiveDuo;
     private bool _isInitialized;
 
     // ====================================================================
@@ -82,14 +93,17 @@ public class ButtonManager : NetworkBehaviour
             return;
         }
 
-        _currentlyActive--;
+        bool isDuo = duoButtons.Contains(button);
+        if (isDuo) _currentlyActiveDuo--; else _currentlyActive--;
+
         DeactivateButton(button);
 
-        if (!_inactivePool.Contains(button))
-            _inactivePool.Add(button);
+        var targetPool = isDuo ? _inactiveDuoPool : _inactivePool;
+        if (!targetPool.Contains(button))
+            targetPool.Add(button);
 
-        Debug.Log($"[ButtonManager] '{button.name}' completed. Active: {_currentlyActive}, Pool: {_inactivePool.Count}");
-        StartCoroutine(RespawnAfterDelay());
+        Debug.Log($"[ButtonManager] '{button.name}' completed (duo={isDuo}).");
+        StartCoroutine(RespawnAfterDelay(isDuo));
     }
 
     /// <summary>Attempts to activate a random button from the inactive pool. Server-only.</summary>
@@ -107,9 +121,11 @@ public class ButtonManager : NetworkBehaviour
             return;
         }
 
-        if (_inactivePool.Count == 0 || _currentlyActive >= activeButtonsAtOnce) return;
+        if (_inactivePool.Count > 0 && _currentlyActive < activeButtonsAtOnce)
+            StartCoroutine(SpawnSequence(false));
 
-        StartCoroutine(SpawnSequence());
+        if (_inactiveDuoPool.Count > 0 && _currentlyActiveDuo < activeDuoButtonsAtOnce)
+            StartCoroutine(SpawnSequence(true));
     }
 
     // ====================================================================
@@ -136,7 +152,9 @@ public class ButtonManager : NetworkBehaviour
         }
 
         _inactivePool.Clear();
+        _inactiveDuoPool.Clear();
         _currentlyActive = 0;
+        _currentlyActiveDuo = 0;
 
         foreach (var btn in allButtons)
         {
@@ -155,15 +173,33 @@ public class ButtonManager : NetworkBehaviour
             DeactivateButtonClientRpc(netObj.NetworkObjectId);
         }
 
+        foreach (var btn in duoButtons)
+        {
+            if (btn == null) continue;
+            var netObj = btn.GetComponent<NetworkObject>();
+            if (netObj == null || !netObj.IsSpawned) continue;
+            _inactiveDuoPool.Add(btn);
+            btn.gameObject.SetActive(false);
+            (btn as IButtonZone)?.ResetButton();
+            DeactivateButtonClientRpc(netObj.NetworkObjectId);
+        }
+
         _isInitialized = true;
-        Debug.Log($"[ButtonManager] Initialized. Pool size: {_inactivePool.Count}");
+        Debug.Log($"[ButtonManager] Initialized. Pool: {_inactivePool.Count} single, {_inactiveDuoPool.Count} duo.");
 
         yield return new WaitForSeconds(2f);
 
         for (int i = 0; i < activeButtonsAtOnce; i++)
         {
             if (_inactivePool.Count == 0) break;
-            TrySpawnRandomButton();
+            StartCoroutine(SpawnSequence(false));
+            yield return new WaitForSeconds(0.2f);
+        }
+
+        for (int i = 0; i < activeDuoButtonsAtOnce; i++)
+        {
+            if (_inactiveDuoPool.Count == 0) break;
+            StartCoroutine(SpawnSequence(true));
             yield return new WaitForSeconds(0.2f);
         }
     }
@@ -172,22 +208,23 @@ public class ButtonManager : NetworkBehaviour
     // Private — Spawn / Deactivate
     // ====================================================================
 
-    private IEnumerator SpawnSequence()
+    private IEnumerator SpawnSequence(bool isDuo)
     {
-        int maxAttempts = Mathf.Min(10, _inactivePool.Count * 2);
+        var pool = isDuo ? _inactiveDuoPool : _inactivePool;
+        int maxAttempts = Mathf.Min(10, pool.Count * 2);
 
-        for (int attempt = 0; attempt < maxAttempts && _inactivePool.Count > 0; attempt++)
+        for (int attempt = 0; attempt < maxAttempts && pool.Count > 0; attempt++)
         {
-            int index = Random.Range(0, _inactivePool.Count);
-            MonoBehaviour candidate = _inactivePool[index];
+            int index = Random.Range(0, pool.Count);
+            MonoBehaviour candidate = pool[index];
 
-            if (candidate == null) { _inactivePool.RemoveAt(index); continue; }
+            if (candidate == null) { pool.RemoveAt(index); continue; }
 
             bool blocked = Physics.CheckSphere(candidate.transform.position, checkRadius, obstructionLayers);
             if (!blocked)
             {
-                _inactivePool.RemoveAt(index);
-                _currentlyActive++;
+                pool.RemoveAt(index);
+                if (isDuo) _currentlyActiveDuo++; else _currentlyActive++;
 
                 candidate.gameObject.SetActive(true);
                 (candidate as IButtonZone)?.ResetButton();
@@ -195,7 +232,7 @@ public class ButtonManager : NetworkBehaviour
                 var netObj = candidate.GetComponent<NetworkObject>();
                 if (netObj != null) ActivateButtonClientRpc(netObj.NetworkObjectId);
 
-                Debug.Log($"[ButtonManager] Activated '{candidate.name}'. Active: {_currentlyActive}");
+                Debug.Log($"[ButtonManager] Activated '{candidate.name}' (duo={isDuo}).");
                 yield break;
             }
 
@@ -214,10 +251,14 @@ public class ButtonManager : NetworkBehaviour
         if (netObj != null) DeactivateButtonClientRpc(netObj.NetworkObjectId);
     }
 
-    private IEnumerator RespawnAfterDelay()
+    private IEnumerator RespawnAfterDelay(bool isDuo)
     {
         yield return new WaitForSeconds(respawnDelay);
-        TrySpawnRandomButton();
+        if (!_isInitialized) yield break;
+        if (isDuo && _inactiveDuoPool.Count > 0 && _currentlyActiveDuo < activeDuoButtonsAtOnce)
+            StartCoroutine(SpawnSequence(true));
+        else if (!isDuo && _inactivePool.Count > 0 && _currentlyActive < activeButtonsAtOnce)
+            StartCoroutine(SpawnSequence(false));
     }
 
     // ====================================================================
@@ -284,4 +325,68 @@ public class ButtonManager : NetworkBehaviour
             Gizmos.DrawWireSphere(btn.transform.position, checkRadius);
         }
     }
+    // ====================================================================
+    // Public – Full Reset (used by in-place game restart)
+    // ====================================================================
+
+    /// <summary>
+    /// Deactivates all active buttons and rebuilds the inactive pools from scratch.
+    /// Call this when restarting the game in-place so buttons return to their initial state.
+    /// Follow with <see cref="RespawnInitialButtons"/> to re-activate the opening set.
+    /// </summary>
+    public void FullReset()
+    {
+        if (!IsServer) return;
+
+        foreach (var btn in allButtons)
+        {
+            if (btn == null) continue;
+            (btn as IButtonZone)?.ResetButton();
+            btn.gameObject.SetActive(false);
+            var no = btn.GetComponent<NetworkObject>();
+            if (no != null) DeactivateButtonClientRpc(no.NetworkObjectId);
+        }
+
+        foreach (var btn in duoButtons)
+        {
+            if (btn == null) continue;
+            (btn as IButtonZone)?.ResetButton();
+            btn.gameObject.SetActive(false);
+            var no = btn.GetComponent<NetworkObject>();
+            if (no != null) DeactivateButtonClientRpc(no.NetworkObjectId);
+        }
+
+        _inactivePool.Clear();
+        _inactiveDuoPool.Clear();
+        _currentlyActive = 0;
+        _currentlyActiveDuo = 0;
+
+        foreach (var btn in allButtons)
+            if (btn != null) _inactivePool.Add(btn);
+
+        foreach (var btn in duoButtons)
+            if (btn != null) _inactiveDuoPool.Add(btn);
+    }
+
+    /// <summary>
+    /// Spawns the initial set of buttons after a <see cref="FullReset"/>.
+    /// Mirrors the end of <see cref="WaitForButtonsThenInitialize"/>.
+    /// </summary>
+    public void RespawnInitialButtons()
+    {
+        if (!IsServer || !_isInitialized) return;
+
+        for (int i = 0; i < activeButtonsAtOnce; i++)
+        {
+            if (_inactivePool.Count == 0) break;
+            StartCoroutine(SpawnSequence(false));
+        }
+
+        for (int i = 0; i < activeDuoButtonsAtOnce; i++)
+        {
+            if (_inactiveDuoPool.Count == 0) break;
+            StartCoroutine(SpawnSequence(true));
+        }
+    }
+
 }

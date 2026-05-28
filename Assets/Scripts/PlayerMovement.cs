@@ -137,7 +137,8 @@ public class PlayerMovement : NetworkBehaviour
     // Private – Coin Interaction
     // ====================================================================
 
-    private Coin _currentNearbyCoin;
+    /// <summary>All coins currently inside the player's collection trigger.</summary>
+    private readonly System.Collections.Generic.List<Coin> _nearbyCoins = new();
     private bool _isCollecting;
 
     // ====================================================================
@@ -398,10 +399,9 @@ public class PlayerMovement : NetworkBehaviour
 
         if (_collectPressed)
         {
-            if (_currentNearbyCoin != null && _currentNearbyCoin.IsSpawned)
-                CollectCoinServerRpc(_currentNearbyCoin.GetComponent<NetworkObject>());
-            else
-                _currentNearbyCoin = null;
+            var coin = GetNextNearbyCoin();
+            if (coin != null)
+                CollectCoinServerRpc(coin.GetComponent<NetworkObject>());
         }
 
         if (_dropPressed && coinsCarried.Value > 0)
@@ -435,6 +435,7 @@ public class PlayerMovement : NetworkBehaviour
     [ServerRpc]
     private void CollectCoinServerRpc(NetworkObjectReference coinRef)
     {
+        if (_isCollecting) return;
         if (coinsCarried.Value < _scoreToWin)
             StartCoroutine(CollectCoinCoroutine(coinRef));
     }
@@ -546,18 +547,29 @@ public class PlayerMovement : NetworkBehaviour
     // Private – Trigger Detection
     // ====================================================================
 
+    /// <summary>
+    /// Returns the first valid coin still inside the collection trigger.
+    /// Cleans up stale references (null or already despawned) in the process.
+    /// </summary>
+    private Coin GetNextNearbyCoin()
+    {
+        _nearbyCoins.RemoveAll(c => c == null || !c.IsSpawned);
+        return _nearbyCoins.Count > 0 ? _nearbyCoins[0] : null;
+    }
+
     private void OnTriggerEnter(Collider other)
     {
-        if (IsOwner && other.CompareTag("Coin"))
-            _currentNearbyCoin = other.GetComponent<Coin>();
+        if (!IsOwner || !other.CompareTag("Coin")) return;
+        var coin = other.GetComponent<Coin>();
+        if (coin != null && !_nearbyCoins.Contains(coin))
+            _nearbyCoins.Add(coin);
     }
 
     private void OnTriggerExit(Collider other)
     {
-        if (IsOwner && other.CompareTag("Coin")
-            && _currentNearbyCoin != null
-            && _currentNearbyCoin.gameObject == other.gameObject)
-            _currentNearbyCoin = null;
+        if (!IsOwner || !other.CompareTag("Coin")) return;
+        var coin = other.GetComponent<Coin>();
+        if (coin != null) _nearbyCoins.Remove(coin);
     }
 
     // ====================================================================

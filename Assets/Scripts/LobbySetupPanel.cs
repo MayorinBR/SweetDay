@@ -126,11 +126,11 @@ public class LobbySetupPanel : MonoBehaviour
 
         // Dropdowns editable only by host; always hidden on mobile.
 #if UNITY_ANDROID || UNITY_IOS
-        if (runnerCountDropdown != null) runnerCountDropdown.gameObject.SetActive(false);
+        if (runnerCountDropdown  != null) runnerCountDropdown.gameObject.SetActive(false);
         if (catcherCountDropdown != null) catcherCountDropdown.gameObject.SetActive(false);
 #else
         bool editable = isHost;
-        if (runnerCountDropdown  != null) runnerCountDropdown.interactable  = editable;
+        if (runnerCountDropdown != null) runnerCountDropdown.interactable = editable;
         if (catcherCountDropdown != null) catcherCountDropdown.interactable = editable;
 #endif
     }
@@ -143,9 +143,9 @@ public class LobbySetupPanel : MonoBehaviour
     {
 #if UNITY_ANDROID || UNITY_IOS
         // Mobile: single player per device — split-screen is disabled.
-        GameSettings.LocalRunnerCount = 1;
+        GameSettings.LocalRunnerCount  = 1;
         GameSettings.LocalCatcherCount = 0;
-        if (runnerCountDropdown != null) runnerCountDropdown.gameObject.SetActive(false);
+        if (runnerCountDropdown  != null) runnerCountDropdown.gameObject.SetActive(false);
         if (catcherCountDropdown != null) catcherCountDropdown.gameObject.SetActive(false);
 #else
         // Runner count (1–4).

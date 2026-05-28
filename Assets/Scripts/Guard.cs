@@ -168,14 +168,16 @@ public class Guard : NetworkBehaviour
 
     private void Update()
     {
+        // Decrease cooldown on the server for ALL Catchers (owner or not),
+        // mirroring the Runner dash pattern so client-owned Catchers work correctly.
+        if (IsServer && AttackCooldownRemaining.Value > 0f)
+            AttackCooldownRemaining.Value =
+                Mathf.Max(0f, AttackCooldownRemaining.Value - Time.deltaTime);
+
         if (IsOwner)
         {
-            if (_localAttackCooldown > 0f)
-            {
-                _localAttackCooldown -= Time.deltaTime;
-                if (_localAttackCooldown < 0f) _localAttackCooldown = 0f;
-                if (IsServer) AttackCooldownRemaining.Value = _localAttackCooldown;
-            }
+            // Keep local copy in sync for smooth UI display.
+            _localAttackCooldown = AttackCooldownRemaining.Value;
 
             if (!_isSwinging) HandleMovement();
             HandleAttackInput();
@@ -296,12 +298,10 @@ public class Guard : NetworkBehaviour
     {
         if (AttackCooldownRemaining.Value > 0f) return;
 
-        _localAttackCooldown = attackCooldown;
         AttackCooldownRemaining.Value = attackCooldown;
 
         StartCoroutine(SwingAnimationCoroutine(swingDuration));
         PerformAttack();
-        SetAttackCooldownClientRpc(attackCooldown);
         AnimateAttackClientRpc();
     }
 
@@ -350,6 +350,25 @@ public class Guard : NetworkBehaviour
         hitbox.localPosition = idleLocalPosition;
         hitbox.localRotation = startRot;
         _isSwinging = false;
+
+        if (IsServer)
+            FinishSwingClientRpc();
+    }
+
+    /// <summary>
+    /// Forces all clients to reset the swing state after the server-side
+    /// animation finishes. Prevents mobile clients from getting stuck with
+    /// <c>_isSwinging = true</c> if their local coroutine is interrupted.
+    /// </summary>
+    [ClientRpc]
+    private void FinishSwingClientRpc()
+    {
+        _isSwinging = false;
+
+        if (_catcherAttackScript == null) return;
+        _catcherAttackScript.transform.localPosition = idleLocalPosition;
+        _catcherAttackScript.transform.localRotation =
+            Quaternion.Euler(idleLocalRotationEuler);
     }
 
     private static IEnumerator LerpTransform(

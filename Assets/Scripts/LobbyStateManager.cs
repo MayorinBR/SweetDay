@@ -98,6 +98,14 @@ public class LobbyStateManager : NetworkBehaviour
         Instance = this;
     }
 
+    /// <inheritdoc/>
+
+    /// <summary>
+    /// Re-applies the slot assignments persisted in <see cref="GameSettings.SlotAssignments"/>
+    /// to the <see cref="NetworkVariable{T}"/> slots so returning players keep their roles.
+    /// </summary>
+
+
     public override void OnDestroy()
     {
         base.OnDestroy();
