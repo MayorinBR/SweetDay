@@ -51,16 +51,23 @@ public class MobileButtonsSetup : MonoBehaviour
         if (NetworkManager.Singleton != null)
         {
             FindAndSetupButtons();
-
-            NetworkManager.Singleton.OnClientConnectedCallback += _ =>
-            {
-                _isSetupComplete = false;
-                FindAndSetupButtons();
-            };
+            NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
         }
 #else
         gameObject.SetActive(false);
 #endif
+    }
+
+    private void OnDestroy()
+    {
+        if (NetworkManager.Singleton != null)
+            NetworkManager.Singleton.OnClientConnectedCallback -= OnClientConnected;
+    }
+
+    private void OnClientConnected(ulong clientId)
+    {
+        _isSetupComplete = false;
+        FindAndSetupButtons();
     }
 
 #if UNITY_EDITOR || UNITY_ANDROID || UNITY_IOS

@@ -215,6 +215,11 @@ public class PlayerMovement : NetworkBehaviour
         base.OnNetworkDespawn();
         coinsCarried.OnValueChanged -= OnCoinsCarriedChanged;
         DashCooldownRemaining.OnValueChanged -= OnDashCooldownChanged;
+
+        // A despawn (e.g. on disconnect) never fires a physical OnTriggerExit, so tell
+        // any button zone this player was standing in to drop them explicitly.
+        if (IsServer)
+            FindAnyObjectByType<ButtonManager>()?.NotifyPlayerRemoved(NetworkObjectId);
     }
 
     /// <summary>

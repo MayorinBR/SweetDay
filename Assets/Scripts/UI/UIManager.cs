@@ -108,6 +108,21 @@ public class UIManager : MonoBehaviour
     /// </summary>
     public TextMeshProUGUI lobbyCodeText;
 
+    [Header("Loading Screen")]
+    /// <summary>
+    /// Fullscreen overlay shown from scene load until every player has
+    /// finished loading and the match is ready to start. Hidden the moment
+    /// the countdown begins (see <see cref="CountdownCoroutine"/>).
+    /// </summary>
+    public GameObject loadingPanel;
+
+    /// <summary>
+    /// Optional copy of <see cref="loadingPanel"/> routed to Display 2, for
+    /// local dual-screen setups where Catchers only start using Screen 2
+    /// once the match begins loading. Leave empty for online-only play.
+    /// </summary>
+    public GameObject loadingPanelScreen2;
+
     [Header("Countdown")]
     /// <summary>Fullscreen overlay shown during the pre-game countdown.</summary>
     public GameObject countdownPanel;
@@ -165,6 +180,8 @@ public class UIManager : MonoBehaviour
         if (gameHudPanel != null) gameHudPanel.SetActive(false);
         if (gameHudPanelScreen2 != null) gameHudPanelScreen2.SetActive(false);
         if (virtualJoystickContainer != null) virtualJoystickContainer.SetActive(false);
+        EnsureOverlayCanvas(loadingPanel, sortingOrder: 210);
+        EnsureOverlayCanvas(loadingPanelScreen2, sortingOrder: 210);
         EnsureOverlayCanvas(countdownPanel, sortingOrder: 200);
         EnsureOverlayCanvas(playerLeftPanel, sortingOrder: 150);
 
@@ -179,6 +196,15 @@ public class UIManager : MonoBehaviour
         if (countdownPanel != null) countdownPanel.SetActive(false);
         if (pausePanel != null) pausePanel.SetActive(false);
         if (playerLeftPanel != null) playerLeftPanel.SetActive(false);
+
+        // Loading screen is visible from the moment the game scene appears;
+        // CountdownCoroutine hides it once every player is actually ready.
+        if (loadingPanel != null) loadingPanel.SetActive(true);
+        if (loadingPanelScreen2 != null)
+        {
+            RouteCanvasToDisplay(loadingPanelScreen2, MultiScreenManager.CatcherDisplayIndex);
+            loadingPanelScreen2.SetActive(true);
+        }
     }
 
     private void OnEnable()
@@ -518,6 +544,12 @@ public class UIManager : MonoBehaviour
 
     private System.Collections.IEnumerator CountdownCoroutine()
     {
+        // Everyone is spawned and ready by now (StartCountdownClientRpc only
+        // fires once all clients finish loading — see GameManager), so the
+        // loading screen's job is done.
+        if (loadingPanel != null) loadingPanel.SetActive(false);
+        if (loadingPanelScreen2 != null) loadingPanelScreen2.SetActive(false);
+
         if (countdownPanel != null) countdownPanel.SetActive(true);
 
         for (int i = 3; i >= 1; i--)

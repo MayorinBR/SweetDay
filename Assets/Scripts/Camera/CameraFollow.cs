@@ -45,15 +45,24 @@ public class CameraFollow : MonoBehaviour
     // ====================================================================
 
     private Transform _target;
+    private Camera _camera;
 
     // ====================================================================
     // Unity Lifecycle
     // ====================================================================
 
+    private void Awake() => _camera = GetComponent<Camera>();
+
     private void Update()
     {
         if (_target == null)
         {
+            // Nothing to follow yet (spawn/ownership message hasn't landed on this
+            // client). Stop rendering instead of showing a stale frame at whatever
+            // position the camera last had — without this, a player can briefly
+            // appear to be stuck at the scene's default camera position (usually
+            // near world origin) until FindAndAssignTarget succeeds.
+            if (_camera != null) _camera.enabled = false;
             FindAndAssignTarget();
             return;
         }
@@ -61,7 +70,11 @@ public class CameraFollow : MonoBehaviour
         // If the target's NetworkObject was despawned, look for a new target.
         var netObj = _target.GetComponent<NetworkObject>();
         if (netObj != null && !netObj.IsSpawned)
+        {
+            _target = null;
+            if (_camera != null) _camera.enabled = false;
             FindAndAssignTarget();
+        }
     }
 
     private void LateUpdate()
@@ -113,6 +126,7 @@ public class CameraFollow : MonoBehaviour
                 netObj.GetComponent<Guard>() != null)
             {
                 _target = netObj.transform;
+                if (_camera != null) _camera.enabled = true;
                 ForcePosition();
                 Debug.Log($"[CameraFollow] Target assigned -> {netObj.name}");
                 return;

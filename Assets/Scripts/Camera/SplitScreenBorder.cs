@@ -57,7 +57,7 @@ public class SplitScreenBorder : MonoBehaviour
     /// sharing the same display.
     /// </summary>
     /// <param name="cameraCount">
-    /// Number of cameras on the display (1 = no borders, 2–4 = appropriate grid lines).
+    /// Number of cameras on the display (1 = no borders, 2–6 = appropriate grid lines).
     /// </param>
     public void Rebuild(int cameraCount)
     {
@@ -75,6 +75,13 @@ public class SplitScreenBorder : MonoBehaviour
             case 4:
                 CreateHorizontal(0.5f);
                 CreateVertical(0.5f, 0f, 1f);
+                break;
+            case 5:
+            case 6:
+                // 3 columns × 2 rows.
+                CreateHorizontal(0.5f);
+                CreateVertical(1f / 3f, 0f, 1f);
+                CreateVertical(2f / 3f, 0f, 1f);
                 break;
         }
     }

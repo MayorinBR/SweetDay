@@ -129,6 +129,21 @@ public class ButtonSpawner : NetworkBehaviour, IButtonZone
         HideProgressBar();
     }
 
+    /// <inheritdoc/>
+    public void RemovePlayer(ulong networkObjectId)
+    {
+        if (_playerInZone == null) return;
+        if (!_playerInZone.TryGetComponent<NetworkObject>(out var netObj)) return;
+        if (netObj.NetworkObjectId != networkObjectId) return;
+
+        _playerInZone = null;
+        if (IsServer)
+        {
+            _isPlayerInZone = false;
+            _currentStayTimeNet.Value = 0f;
+        }
+    }
+
     // ====================================================================
     // Private – Activation Logic
     // ====================================================================
@@ -166,10 +181,21 @@ public class ButtonSpawner : NetworkBehaviour, IButtonZone
     {
         if (!_isInitialized || !other.CompareTag("Player")) return;
 
-        _playerInZone = other.gameObject;
+        if (IsServer)
+        {
+            _playerInZone = other.gameObject;
+            _isPlayerInZone = true;
+            return;
+        }
 
-        if (IsServer) _isPlayerInZone = true;
-        else NotifyServerEnteredServerRpc(inside: true);
+        // Non-owning remote clients also run local physics on replicated (interpolated)
+        // player objects, which can fire this trigger for a player that isn't theirs.
+        // Only the owner should report presence, matching DuoButtonSpawner's pattern —
+        // otherwise another player's network jitter can send a false enter/exit here.
+        if (!other.TryGetComponent<NetworkObject>(out var netObj) || !netObj.IsOwner) return;
+
+        _playerInZone = other.gameObject;
+        NotifyServerEnteredServerRpc(inside: true);
     }
 
     private void OnTriggerExit(Collider other)
@@ -184,11 +210,11 @@ public class ButtonSpawner : NetworkBehaviour, IButtonZone
         {
             _isPlayerInZone = false;
             _currentStayTimeNet.Value = 0f;
+            return;
         }
-        else
-        {
-            NotifyServerEnteredServerRpc(inside: false);
-        }
+
+        if (!other.TryGetComponent<NetworkObject>(out var netObj) || !netObj.IsOwner) return;
+        NotifyServerEnteredServerRpc(inside: false);
     }
 
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]

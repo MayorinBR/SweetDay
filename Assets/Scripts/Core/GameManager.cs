@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -79,6 +80,12 @@ public class GameManager : NetworkBehaviour
     private UIManager _uiManager;
     private LobbyManager _lobbyManager;
 
+    /// <summary>Server-only: client IDs that have reported ready via <see cref="NotifyClientReadyServerRpc"/>.</summary>
+    private readonly HashSet<ulong> _readyClients = new HashSet<ulong>();
+
+    /// <summary>Server-only: guards against starting the match more than once.</summary>
+    private bool _matchStarting;
+
     // ====================================================================
     // Unity Lifecycle
     // ====================================================================
@@ -122,18 +129,19 @@ public class GameManager : NetworkBehaviour
         {
             playerLives.Value = InitialLives;
             gameTimer.Value = GameDuration;
-
-            // Auto-start: when the game scene loads after the host clicked
-            // "Start Match" in LobbySetupPanel, all players are already connected
-            // and we can spawn + start immediately.
-            // NetworkManager.IsListening is true only when a session already exists
-            // (i.e. we came from the lobby, not from a fresh editor play).
-            if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening)
-            {
-                // Small delay to ensure all NetworkObjects in the scene have spawned.
-                StartCoroutine(AutoStartAfterSceneLoad());
-            }
         }
+
+        // Every client (including the host) reports itself ready once its
+        // own GameManager replica has spawned — i.e. once its local scene
+        // has actually finished loading. The server waits until everyone
+        // currently connected has reported in before spawning players and
+        // starting the countdown (see NotifyClientReadyServerRpc). This is
+        // what keeps the loading screen up for a client that is still
+        // connecting/loading instead of racing ahead on the host alone.
+        // NetworkManager.IsListening is true only when a session already
+        // exists (i.e. we came from the lobby, not from a fresh editor play).
+        if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening)
+            NotifyClientReadyServerRpc();
     }
 
     /// <inheritdoc/>
@@ -151,13 +159,33 @@ public class GameManager : NetworkBehaviour
             NetworkManager.Singleton.OnClientDisconnectCallback -= stateSystem.OnClientDisconnectedDuringGame;
     }
 
+    /// <summary>
+    /// Server-only: called by every client once its own game scene has
+    /// loaded. Starts the spawn-and-countdown sequence only once every
+    /// currently connected client has reported in, so the loading screen
+    /// stays up for everyone until the slowest client is actually ready.
+    /// </summary>
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
+    public void NotifyClientReadyServerRpc(RpcParams rpcParams = default)
+    {
+        _readyClients.Add(rpcParams.Receive.SenderClientId);
+
+        if (_matchStarting || _readyClients.Count < NetworkManager.Singleton.ConnectedClientsIds.Count)
+            return;
+
+        _matchStarting = true;
+        StartCoroutine(AutoStartAfterSceneLoad());
+    }
+
     // ====================================================================
     // Public Game Flow (Server only)
     // ====================================================================
 
     /// <summary>
-    /// Waits two frames for all scene <see cref="NetworkObject"/>s to finish
-    /// spawning, then calls <see cref="SpawnAllPlayersAndStartGame"/> automatically.
+    /// Called once every client has finished loading the game scene (see
+    /// <see cref="NotifyClientReadyServerRpc"/>). Waits two more frames for
+    /// scene <see cref="NetworkObject"/>s to finish registering, then calls
+    /// <see cref="SpawnAllPlayersAndStartGame"/> automatically.
     ///
     /// Guards:
     /// <list type="bullet">

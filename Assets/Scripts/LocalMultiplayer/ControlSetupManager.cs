@@ -29,7 +29,7 @@ public class ControlSetupManager : MonoBehaviour
     // match what you named your schemes (e.g. "Keyboard&Mouse", "Controller", etc.)
     internal const string FallbackSchemeKeyboard = "Keyboard";
     internal const string FallbackSchemeGamepad = "Gamepad";
-    private const int MaxRetryFrames = 10;
+    private const int MaxRetryFrames = 30;
 
     // ====================================================================
     // Private State
@@ -299,15 +299,44 @@ public class ControlSetupManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Used when <see cref="RetryAssign"/> gives up because <c>pInput.user</c>
+    /// never became valid on its own. <see cref="PlayerInput.SwitchCurrentControlScheme"/>
+    /// requires an already-paired (valid) <c>InputUser</c> internally — calling it
+    /// on a still-unpaired user throws <c>InvalidOperationException: Invalid user</c>,
+    /// which used to abort this whole fallback and leave the player with no input
+    /// bound at all. Pairing the device first, exactly like <see cref="AssignInternal"/>
+    /// does, fixes that.
+    /// </summary>
     private void EmergencyAssign(PlayerInput pInput, int globalIndex)
     {
         Debug.LogWarning($"[ControlSetupManager] Emergency assignment for global index {globalIndex}.");
 
         var gamepads = Gamepad.all;
-        if (globalIndex < gamepads.Count)
-            pInput.SwitchCurrentControlScheme(FindGamepadScheme(pInput), gamepads[globalIndex]);
-        else if (Keyboard.current != null)
-            pInput.SwitchCurrentControlScheme(FindKeyboardScheme(pInput), Keyboard.current, Mouse.current);
+        InputDevice device = globalIndex < gamepads.Count ? (InputDevice)gamepads[globalIndex] : Keyboard.current;
+        if (device == null) return;
+
+        if (pInput.user.valid)
+            pInput.user.UnpairDevices();
+
+        InputUser.PerformPairingWithDevice(device, pInput.user);
+
+        if (device is Keyboard)
+        {
+            if (Mouse.current != null)
+                InputUser.PerformPairingWithDevice(Mouse.current, pInput.user);
+
+            pInput.SwitchCurrentControlScheme(FindKeyboardScheme(pInput),
+                Mouse.current != null
+                    ? new InputDevice[] { Keyboard.current, Mouse.current }
+                    : new InputDevice[] { Keyboard.current });
+        }
+        else
+        {
+            pInput.SwitchCurrentControlScheme(FindGamepadScheme(pInput), device);
+        }
+
+        _playerDevices[globalIndex] = device;
     }
 
 

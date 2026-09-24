@@ -81,6 +81,18 @@ public class LobbyStateManager : NetworkBehaviour
         0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
     // ====================================================================
+    // Network State – Display Mode
+    // ====================================================================
+
+    /// <summary>
+    /// Whether the host is routing local Catchers to a second physical display.
+    /// Host-only write (the host machine is also the server, so it can set this
+    /// directly); every connected client can read it to show the current state.
+    /// </summary>
+    public NetworkVariable<bool> UseDualScreenMode = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    // ====================================================================
     // Public Properties
     // ====================================================================
 

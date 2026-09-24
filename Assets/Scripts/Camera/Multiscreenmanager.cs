@@ -46,7 +46,7 @@ public class MultiScreenManager : MonoBehaviour
 
     /// <summary>
     /// Activates Display 1 unconditionally, and activates Display 2 when
-    /// <see cref="GameSettings.UseSecondDisplay"/> is <c>true</c>.
+    /// <see cref="GameSettings.UseDualScreenMode"/> is <c>true</c>.
     /// Safe to call multiple times; subsequent calls on an already-active display
     /// are no-ops.
     /// </summary>
@@ -60,7 +60,7 @@ public class MultiScreenManager : MonoBehaviour
             Debug.Log("[MultiScreenManager] Display 1 (Runner screen) activated.");
         }
 
-        if (GameSettings.UseSecondDisplay)
+        if (GameSettings.UseDualScreenMode)
         {
             if (Display.displays.Length > CatcherDisplayIndex)
             {
@@ -94,8 +94,10 @@ public class MultiScreenManager : MonoBehaviour
     /// <summary>
     /// Returns <c>true</c> when a second physical display is detected at runtime.
     /// Always returns <c>true</c> in the Editor (the second Game View acts as the display).
+    /// Static so callers outside the game scene (e.g. the Lobby screen) can
+    /// query display availability without an <see cref="Instance"/>.
     /// </summary>
-    public bool IsSecondDisplayAvailable()
+    public static bool IsSecondDisplayAvailable()
     {
 #if UNITY_EDITOR
         return true;

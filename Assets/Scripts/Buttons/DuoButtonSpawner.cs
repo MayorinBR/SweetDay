@@ -148,6 +148,12 @@ public class DuoButtonSpawner : NetworkBehaviour, IButtonZone
         HideProgressBar();
     }
 
+    /// <inheritdoc/>
+    public void RemovePlayer(ulong networkObjectId)
+    {
+        if (IsServer) RegisterExit(networkObjectId);
+    }
+
     // ====================================================================
     // Trigger Handlers
     // ====================================================================

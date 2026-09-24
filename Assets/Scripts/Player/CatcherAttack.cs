@@ -82,6 +82,7 @@ public class CatcherAttack : MonoBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
+        _gameManager ??= FindAnyObjectByType<GameManager>();
         if (_gameManager == null || !_gameManager.IsServer) return;
         if (ownerNetworkObject == null || _hasHit) return;
         if (!other.CompareTag("Player")) return;

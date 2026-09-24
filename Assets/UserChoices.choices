@@ -29,7 +29,7 @@ MonoBehaviour:
       - LockstepSimulation
     - QuestionId: PlayerCount
       Answers:
-      - 4
+      - 8
   Preset: 9
   SelectedSolutions:
     SelectedHostingModel: 1

@@ -195,13 +195,13 @@ public class SplitScreenManager : MonoBehaviour
     /// <list type="number">
     ///   <item>Only Runners present → all cameras on Display 1.</item>
     ///   <item>Only Catchers present → all cameras on Display 1.</item>
-    ///   <item>Both present → Runners on Display 1, Catchers on Display 2.
-    ///         In the Editor Display 2 is simulated by a second Game View;
-    ///         in a build a second monitor must be connected.</item>
+    ///   <item>Both present and <see cref="GameSettings.UseDualScreenMode"/> is <c>true</c>
+    ///         → Runners on Display 1, Catchers on Display 2. In the Editor, Display 2
+    ///         is simulated by a second Game View; in a build a second monitor must be
+    ///         connected.</item>
+    ///   <item>Both present and dual-screen mode is off or unavailable → Runners and
+    ///         Catchers share Display 1 in one combined grid.</item>
     /// </list>
-    ///
-    /// The Inspector field <see cref="singleScreenFallback"/> is no longer used
-    /// for the single-type case — whichever type is playing always gets Screen 1.
     /// </summary>
     private void BuildCameras(List<GameObject> runners, List<GameObject> catchers)
     {
@@ -237,9 +237,9 @@ public class SplitScreenManager : MonoBehaviour
 
             SplitScreenBorder.Instance?.Rebuild(targets.Count);
         }
-        else
+        else if (GameSettings.UseDualScreenMode)
         {
-            // ── Both roles: Runners → Display 1, Catchers → Display 2 ────
+            // ── Dual-screen mode: Runners → Display 1, Catchers → Display 2 ────
 #if UNITY_EDITOR
             // In the Editor, open a second Game View and set it to Display 2
             // via the dropdown in the Game View title bar.
@@ -271,6 +271,31 @@ public class SplitScreenManager : MonoBehaviour
                       $"{catchers.Count} catcher camera(s) on Display 2.");
 
             SplitScreenBorder.Instance?.Rebuild(runners.Count);
+        }
+        else
+        {
+            // ── Single-screen mode: Runners and Catchers share Display 1 ────
+            List<GameObject> combined = new List<GameObject>(runners);
+            combined.AddRange(catchers);
+
+            for (int i = 0; i < combined.Count; i++)
+            {
+                bool isCatcher = i >= runners.Count;
+                var cam = CreateCamera(
+                    isCatcher ? $"CatcherCamera_P{i - runners.Count + 1}" : $"RunnerCamera_P{i + 1}",
+                    combined[i].transform,
+                    GetViewportRect(i, combined.Count),
+                    MultiScreenManager.RunnerDisplayIndex,
+                    keepListener: i == 0);
+
+                if (isCatcher) _catcherCameras.Add(cam);
+                else _runnerCameras.Add(cam);
+            }
+
+            Debug.Log($"[SplitScreenManager] Combined single-screen session — " +
+                      $"{runners.Count} runner(s) + {catchers.Count} catcher(s) on Display 1.");
+
+            SplitScreenBorder.Instance?.Rebuild(combined.Count);
         }
     }
 
@@ -361,9 +386,28 @@ public class SplitScreenManager : MonoBehaviour
                 if (index == 2) return new Rect(0f, 0f, 0.5f, 0.5f);
                 return new Rect(0.5f, 0f, 0.5f, 0.5f);
 
+            case 5:
+            case 6:
+                // 3 columns × 2 rows, filled left-to-right, top-to-bottom.
+                return GetGridViewportRect(index, columns: 3);
+
             default:
                 return new Rect(0f, 0f, 1f, 1f);
         }
+    }
+
+    /// <summary>
+    /// Returns the normalised <see cref="Rect"/> for a cell in a two-row grid with
+    /// <paramref name="columns"/> columns, filled left-to-right then top-to-bottom.
+    /// </summary>
+    private static Rect GetGridViewportRect(int index, int columns)
+    {
+        int row = index / columns;
+        int col = index % columns;
+        float cellWidth = 1f / columns;
+        const float cellHeight = 0.5f;
+
+        return new Rect(col * cellWidth, 1f - cellHeight * (row + 1), cellWidth, cellHeight);
     }
 
     private static CameraFollow FindCameraFollowing(Transform target)

@@ -572,6 +572,10 @@ public class NetworkConnectionManager : NetworkBehaviour
 
         _selectedPlayerType = PlayerType.Runner;
         _isNetcodeConfigured = false;
+
+        // Otherwise a new lobby can briefly read stale slot/role data from
+        // the match that just ended.
+        GameSettings.ResetSession();
     }
 
     private bool IsCodeClean(string code)
@@ -811,6 +815,11 @@ public class NetworkConnectionManager : NetworkBehaviour
             var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
             transport.SetRelayServerData(AllocationUtils.ToRelayServerData(joinAllocation, "dtls"));
 
+            // StartSessionAndGoToLobby (host path) calls this before StartHost(); the
+            // client path needs it too, otherwise a client that previously called
+            // CleanStartNewGame (which clears _isNetcodeConfigured) never gets its
+            // OnClientConnected/OnClientDisconnected callbacks re-registered here.
+            ConfigureNetworkManager();
             NetworkManager.Singleton.NetworkConfig.ConnectionData = GetConnectionPayload();
 
             if (!NetworkManager.Singleton.StartClient())

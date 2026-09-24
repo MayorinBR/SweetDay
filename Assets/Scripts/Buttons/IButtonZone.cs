@@ -11,4 +11,13 @@ public interface IButtonZone
     /// Called by <see cref="ButtonManager"/> after the zone is completed or the cooldown expires.
     /// </summary>
     void ResetButton();
+
+    /// <summary>
+    /// Server-only: removes a player from this zone's occupancy tracking without
+    /// relying on a physical <c>OnTriggerExit</c>. Called by <see cref="ButtonManager"/>
+    /// when a player's <see cref="Unity.Netcode.NetworkObject"/> despawns (e.g. on
+    /// disconnect) while still standing in the zone, which never fires a trigger exit
+    /// and would otherwise leave the zone stuck thinking that player is still present.
+    /// </summary>
+    void RemovePlayer(ulong networkObjectId);
 }

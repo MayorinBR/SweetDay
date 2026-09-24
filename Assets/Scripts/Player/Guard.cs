@@ -153,6 +153,11 @@ public class Guard : NetworkBehaviour
     {
         base.OnNetworkDespawn();
         AttackCooldownRemaining.OnValueChanged -= OnAttackCooldownChanged;
+
+        // A despawn (e.g. on disconnect) never fires a physical OnTriggerExit, so tell
+        // any button zone this player was standing in to drop them explicitly.
+        if (IsServer)
+            FindAnyObjectByType<ButtonManager>()?.NotifyPlayerRemoved(NetworkObjectId);
     }
 
     // ====================================================================

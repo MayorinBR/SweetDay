@@ -86,8 +86,8 @@ public class LobbyManager : MonoBehaviour
 
         if (NetworkConnectionManager.Instance != null)
         {
-            NetworkConnectionManager.Instance.totalPlayers.OnValueChanged += (_, __) => RefreshPlayerCounter();
-            NetworkConnectionManager.Instance.totalGuards.OnValueChanged += (_, __) => RefreshPlayerCounter();
+            NetworkConnectionManager.Instance.totalPlayers.OnValueChanged += OnPlayerCountsChanged;
+            NetworkConnectionManager.Instance.totalGuards.OnValueChanged += OnPlayerCountsChanged;
         }
 
         // Deferred label update: network may not be ready at Start time.
@@ -106,7 +106,16 @@ public class LobbyManager : MonoBehaviour
     private void OnDestroy()
     {
         SceneManager.sceneLoaded -= OnSceneLoaded;
+
+        if (NetworkConnectionManager.Instance != null)
+        {
+            NetworkConnectionManager.Instance.totalPlayers.OnValueChanged -= OnPlayerCountsChanged;
+            NetworkConnectionManager.Instance.totalGuards.OnValueChanged -= OnPlayerCountsChanged;
+        }
     }
+
+    /// <summary>Refreshes the player counter label. Used for both totalPlayers and totalGuards changes.</summary>
+    private void OnPlayerCountsChanged(int previous, int current) => RefreshPlayerCounter();
 
     // ====================================================================
     // Public – Panel Navigation

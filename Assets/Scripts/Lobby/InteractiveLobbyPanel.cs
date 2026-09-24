@@ -53,6 +53,20 @@ public class InteractiveLobbyPanel : MonoBehaviour
     [SerializeField] private TextMeshProUGUI playerCountText;
 
     // ====================================================================
+    // Inspector – Display Mode
+    // ====================================================================
+
+    [Header("Display Mode")]
+    /// <summary>
+    /// Enables routing local Catchers to a second physical display instead of
+    /// sharing Screen 1 with the local Runners. Value is networked
+    /// (<see cref="LobbyStateManager.UseDualScreenMode"/>): every player sees
+    /// the current state, but only the host can change it, and only when the
+    /// host's own machine has a second display detected.
+    /// </summary>
+    [SerializeField] private Toggle dualScreenToggle;
+
+    // ====================================================================
     // Colors
     // ====================================================================
 
@@ -91,6 +105,9 @@ public class InteractiveLobbyPanel : MonoBehaviour
     /// </summary>
     private readonly Dictionary<int, int> _hoveredSlot = new Dictionary<int, int>();
 
+    /// <summary>Whether this machine has a second physical display connected.</summary>
+    private bool _secondDisplayAvailable;
+
     // ====================================================================
     // Unity Lifecycle
     // ====================================================================
@@ -111,6 +128,7 @@ public class InteractiveLobbyPanel : MonoBehaviour
     {
         StopAllCoroutines();
         _state?.RemoveChangeListeners(OnSlotChanged, OnLevelChanged);
+        if (_state != null) _state.UseDualScreenMode.OnValueChanged -= OnDualScreenModeNetworkChanged;
     }
 
     private void Update()
@@ -133,7 +151,10 @@ public class InteractiveLobbyPanel : MonoBehaviour
     private void Subscribe()
     {
         _state.AddChangeListeners(OnSlotChanged, OnLevelChanged);
+        _state.UseDualScreenMode.OnValueChanged += OnDualScreenModeNetworkChanged;
+        _secondDisplayAvailable = MultiScreenManager.IsSecondDisplayAvailable();
         WireSlotButtons();
+        InitialiseDualScreenToggle();
         RefreshAll();
     }
 
@@ -191,6 +212,41 @@ public class InteractiveLobbyPanel : MonoBehaviour
         if (startButton != null) { startButton.onClick.RemoveAllListeners(); startButton.onClick.AddListener(OnStartClicked); }
         if (disconnectButton != null) { disconnectButton.onClick.RemoveAllListeners(); disconnectButton.onClick.AddListener(OnDisconnectClicked); }
         if (quitButton != null) { quitButton.onClick.RemoveAllListeners(); quitButton.onClick.AddListener(OnQuitClicked); }
+    }
+
+    /// <summary>
+    /// Detects whether a second physical display is connected on this machine,
+    /// syncs <see cref="dualScreenToggle"/> to the current networked state, and
+    /// restricts editing to the host. Every client sees the same value; only the
+    /// host can change it.
+    /// </summary>
+    private void InitialiseDualScreenToggle()
+    {
+        if (dualScreenToggle == null || _state == null) return;
+
+        dualScreenToggle.SetIsOnWithoutNotify(_state.UseDualScreenMode.Value);
+        GameSettings.UseDualScreenMode = _state.UseDualScreenMode.Value;
+
+        dualScreenToggle.onValueChanged.RemoveAllListeners();
+        dualScreenToggle.onValueChanged.AddListener(OnDualScreenToggleChanged);
+    }
+
+    /// <summary>Host-only: pushes the local toggle change to the networked value.</summary>
+    private void OnDualScreenToggleChanged(bool isOn)
+    {
+        bool isHost = NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost;
+        if (!isHost || _state == null) return;
+
+        // The host machine is also the server, so it can write this
+        // NetworkVariable directly — no RPC round-trip needed.
+        _state.UseDualScreenMode.Value = isOn;
+    }
+
+    /// <summary>Mirrors the networked toggle value into the local UI and <see cref="GameSettings"/>.</summary>
+    private void OnDualScreenModeNetworkChanged(bool previous, bool current)
+    {
+        GameSettings.UseDualScreenMode = current;
+        if (dualScreenToggle != null) dualScreenToggle.SetIsOnWithoutNotify(current);
     }
 
     // ====================================================================
@@ -409,6 +465,9 @@ public class InteractiveLobbyPanel : MonoBehaviour
         if (startButton != null) startButton.gameObject.SetActive(isHost);
         if (prevLevelButton != null) prevLevelButton.interactable = isHost;
         if (nextLevelButton != null) nextLevelButton.interactable = isHost;
+
+        // Visible to everyone, but only the host (who is also the server) can edit it.
+        if (dualScreenToggle != null) dualScreenToggle.interactable = isHost && _secondDisplayAvailable;
     }
 
     // ====================================================================

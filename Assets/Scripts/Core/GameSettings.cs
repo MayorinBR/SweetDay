@@ -12,6 +12,7 @@ public static class GameSettings
 
     private static int _localRunnerCount = 1;
     private static int _localCatcherCount = 0;
+    private static bool _useDualScreenMode = false;
 
     // ====================================================================
     // Properties – Runner / Catcher Counts
@@ -134,8 +135,33 @@ public static class GameSettings
     public static bool IsLocalMultiplayer => _localRunnerCount > 1 || _localCatcherCount > 0;
 
     /// <summary>
-    /// <c>true</c> when a second physical display is available and should be used
-    /// for the Catcher screen.
+    /// Whether this machine opted into routing local Catchers to a second physical
+    /// display, set from the dual-screen toggle on the Lobby screen
+    /// (<see cref="InteractiveLobbyPanel"/>). Purely local — each machine decides
+    /// independently. Has no effect unless local Catchers are actually present
+    /// and a second display is detected; see <see cref="SplitScreenManager"/>.
     /// </summary>
-    public static bool UseSecondDisplay => _localCatcherCount > 0;
+    public static bool UseDualScreenMode
+    {
+        get => _useDualScreenMode;
+        set => _useDualScreenMode = value;
+    }
+
+    // ====================================================================
+    // Session Reset
+    // ====================================================================
+
+    /// <summary>
+    /// Clears per-match slot data left over from a previous session. Call this
+    /// when a connection is torn down or reset (see
+    /// <see cref="NetworkConnectionManager.ResetConnectionState"/> and
+    /// <see cref="NetworkConnectionManager.CleanStartNewGame"/>), otherwise a
+    /// new lobby can briefly read stale <see cref="SlotAssignments"/> from the
+    /// match that just ended.
+    /// </summary>
+    public static void ResetSession()
+    {
+        SlotAssignments.Clear();
+        ClientSlotAssignments.Clear();
+    }
 }

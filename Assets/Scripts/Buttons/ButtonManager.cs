@@ -106,6 +106,24 @@ public class ButtonManager : NetworkBehaviour
         StartCoroutine(RespawnAfterDelay(isDuo));
     }
 
+    /// <summary>
+    /// Server-only: tells every managed <see cref="IButtonZone"/> to drop
+    /// <paramref name="networkObjectId"/> from its occupancy tracking. Call this when a
+    /// player's <see cref="NetworkObject"/> despawns (e.g. on disconnect) so a zone that
+    /// player was standing in doesn't stay stuck thinking they're still present — a
+    /// despawn never fires a physical <c>OnTriggerExit</c>.
+    /// </summary>
+    public void NotifyPlayerRemoved(ulong networkObjectId)
+    {
+        if (!IsServer) return;
+
+        foreach (var btn in allButtons)
+            (btn as IButtonZone)?.RemovePlayer(networkObjectId);
+
+        foreach (var btn in duoButtons)
+            (btn as IButtonZone)?.RemovePlayer(networkObjectId);
+    }
+
     /// <summary>Attempts to activate a random button from the inactive pool. Server-only.</summary>
     public void TrySpawnRandomButton()
     {
