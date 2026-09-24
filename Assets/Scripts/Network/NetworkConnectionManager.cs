@@ -302,146 +302,6 @@ public class NetworkConnectionManager : NetworkBehaviour
     }
 
     // ====================================================================
-    // Host / Client Entry Points
-    // ====================================================================
-
-    /// <summary>
-    /// Creates a Relay allocation, creates a Unity Lobby, and starts as host,
-    /// then loads <paramref name="sceneName"/> for all connected clients.
-    /// </summary>
-    public async void StartHostWithScene(string sceneName)
-    {
-        if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening)
-        {
-            Debug.LogWarning("[NetworkConnectionManager] StartHostWithScene called while already listening. Ignoring.");
-            return;
-        }
-
-        try
-        {
-            if (!_isInitialized)
-                await InitializeUnityServices();
-
-            if (!AuthenticationService.Instance.IsSignedIn)
-                await AuthenticationService.Instance.SignInAnonymouslyAsync();
-
-            const int maxRetries = 5;
-
-            for (int i = 0; i < maxRetries; i++)
-            {
-                try
-                {
-                    var allocation = await RelayService.Instance.CreateAllocationAsync(MAX_TOTAL_PLAYERS);
-                    string relayCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
-
-                    var options = new CreateLobbyOptions
-                    {
-                        IsPrivate = false,
-                        Data = new Dictionary<string, DataObject>
-                        {
-                            { "RelayJoinCode", new DataObject(DataObject.VisibilityOptions.Member, relayCode)  },
-                            { "SceneName",     new DataObject(DataObject.VisibilityOptions.Member, sceneName) },
-                            { "LocalPlayers",  new DataObject(DataObject.VisibilityOptions.Member,
-                                                              GameSettings.LocalPlayerCount.ToString()) }
-                        }
-                    };
-
-                    _currentLobby = await LobbyService.Instance
-                        .CreateLobbyAsync($"Lobby_{relayCode}", MAX_TOTAL_PLAYERS, options);
-
-                    if (!IsCodeClean(_currentLobby.LobbyCode))
-                    {
-                        Debug.LogWarning($"[NetworkConnectionManager] Lobby code '{_currentLobby.LobbyCode}' " +
-                                         "contains forbidden characters. Retrying.");
-                        await LobbyService.Instance.DeleteLobbyAsync(_currentLobby.Id);
-                        _currentLobby = null;
-
-                        if (i < maxRetries - 1)
-                            await Task.Delay(500);
-
-                        continue;
-                    }
-
-                    // Code is clean — configure transport with THIS allocation and start host.
-                    _lobbyCode = _currentLobby.LobbyCode;
-
-                    var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-                    transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, "dtls"));
-
-                    ConfigureNetworkManager();
-                    NetworkManager.Singleton.NetworkConfig.ConnectionData = GetConnectionPayload();
-
-                    if (!NetworkManager.Singleton.StartHost())
-                    {
-                        Debug.LogError("[NetworkConnectionManager] NetworkManager.StartHost() returned false.");
-                        return;
-                    }
-
-                    ulong hostId = NetworkManager.Singleton.LocalClientId;
-                    _clientPlayerTypes.TryAdd(hostId, _selectedPlayerType);
-
-                    NetworkManager.Singleton.SceneManager.LoadScene(sceneName, LoadSceneMode.Single);
-                    _uiManager?.ShowLobbyUI(true, _lobbyCode);
-                    _ = HeartbeatLobbyAsync();
-                    _uiManager?.ShowLobbySetupUI();
-                    return; // Success — exit the method entirely.
-                }
-                catch (Exception e)
-                {
-                    Debug.LogError($"[NetworkConnectionManager] Host attempt {i + 1} failed: {e.Message}");
-                    if (i == maxRetries - 1) throw;
-                    await Task.Delay(500);
-                }
-            }
-
-            Debug.LogError("[NetworkConnectionManager] Could not create a clean lobby after all retries.");
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"[NetworkConnectionManager] StartHostWithScene error: {e.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Joins an existing session using a lobby code, configures the Relay transport,
-    /// and starts as a client.
-    /// </summary>
-    public async void StartClientWithCode(string joinCode)
-    {
-        try
-        {
-            if (!_isInitialized)
-                await InitializeUnityServices();
-
-            if (!AuthenticationService.Instance.IsSignedIn)
-                await AuthenticationService.Instance.SignInAnonymouslyAsync();
-
-            var lobby = await LobbyService.Instance.JoinLobbyByCodeAsync(joinCode);
-            _currentLobby = lobby;
-
-            string relayJoinCode = _currentLobby.Data["RelayJoinCode"].Value;
-            string sceneName = _currentLobby.Data["SceneName"].Value;
-
-            var joinAllocation = await RelayService.Instance.JoinAllocationAsync(relayJoinCode);
-            var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-            transport.SetRelayServerData(AllocationUtils.ToRelayServerData(joinAllocation, "dtls"));
-
-            NetworkManager.Singleton.NetworkConfig.ConnectionData = GetConnectionPayload();
-
-            if (NetworkManager.Singleton.StartClient())
-                _uiManager?.ShowLobbyUI(false, joinCode);
-        }
-        catch (LobbyServiceException e) when (e.Reason == LobbyExceptionReason.LobbyNotFound)
-        {
-            Debug.LogError($"[NetworkConnectionManager] Lobby not found for code: {joinCode}");
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"[NetworkConnectionManager] StartClientWithCode error: {e.Message}");
-        }
-    }
-
-    // ====================================================================
     // Disconnect / Cleanup
     // ====================================================================
 
@@ -693,16 +553,9 @@ public class NetworkConnectionManager : NetworkBehaviour
     {
         if (!IsServer) return;
 
-        // In the lobby phase: count connected clients (slots show actual selections).
-        // In game phase: count spawned player objects for accuracy.
-        int connected = NetworkManager.Singleton != null
-            ? NetworkManager.Singleton.ConnectedClientsList.Count
-            : 0;
-
-        // Update networkVariables so LobbyManager / InteractiveLobbyPanel can read them.
-        totalPlayers.Value = connected;
-        totalGuards.Value = 0; // detailed split shown by LobbyStateManager slots
-
+        // totalPlayers / totalGuards are already maintained per-role by
+        // HandleClientConnected / HandleClientDisconnected — just push the
+        // current values (and lobby code) to all clients.
         if (IsSpawned) UpdateLobbyTextsClientRpc(_lobbyCode);
     }
 
@@ -803,7 +656,7 @@ public class NetworkConnectionManager : NetworkBehaviour
     // Client RPCs
     // ====================================================================
 
-    [ClientRpc]
+    [Rpc(SendTo.ClientsAndHost)]
     private void UpdateLobbyTextsClientRpc(string lobbyCode)
     {
         if (LobbyManager.Instance == null) return;
@@ -818,7 +671,7 @@ public class NetworkConnectionManager : NetworkBehaviour
         LobbyManager.Instance.ShowLobbyUI(isHost, lobbyCode);
     }
 
-    [ClientRpc]
+    [Rpc(SendTo.ClientsAndHost)]
     private void NotifySceneChangeClientRpc(string sceneName)
     {
         LobbyManager.Instance?.ShowLoadingMessage($"Loading: {sceneName}...");

@@ -321,7 +321,7 @@ public class PlayerMovement : NetworkBehaviour
     // ====================================================================
 
     /// <summary>Teleports the player and snaps the camera. Called via ClientRpc.</summary>
-    [ClientRpc]
+    [Rpc(SendTo.ClientsAndHost)]
     public void TeleportPlayerClientRpc(Vector3 newPosition)
     {
         if (_characterController != null) _characterController.enabled = false;
@@ -432,7 +432,7 @@ public class PlayerMovement : NetworkBehaviour
     // Private – Coin RPCs
     // ====================================================================
 
-    [ServerRpc]
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
     private void CollectCoinServerRpc(NetworkObjectReference coinRef)
     {
         if (_isCollecting) return;
@@ -459,7 +459,7 @@ public class PlayerMovement : NetworkBehaviour
         _isCollecting = false;
     }
 
-    [ServerRpc]
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
     private void DropCoinServerRpc()
     {
         if (coinsCarried.Value <= 0) return;
@@ -472,7 +472,7 @@ public class PlayerMovement : NetworkBehaviour
     // Private – Dash RPCs
     // ====================================================================
 
-    [ServerRpc]
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
     private void DashServerRpc(Vector3 direction)
     {
         if (_isDashing || DashCooldownRemaining.Value > 0f) return;
@@ -480,7 +480,7 @@ public class PlayerMovement : NetworkBehaviour
         DashClientRpc(direction, DashCooldownDuration);
     }
 
-    [ClientRpc]
+    [Rpc(SendTo.ClientsAndHost)]
     private void DashClientRpc(Vector3 direction, float cooldown)
     {
         if (IsOwner) _localDashCooldown = cooldown;
@@ -504,7 +504,7 @@ public class PlayerMovement : NetworkBehaviour
     // Private – Invulnerability
     // ====================================================================
 
-    [ClientRpc]
+    [Rpc(SendTo.ClientsAndHost)]
     private void StartInvulnerabilityVisualsClientRpc()
         => StartCoroutine(FlashVisualsCoroutine(invulnerabilityDuration));
 

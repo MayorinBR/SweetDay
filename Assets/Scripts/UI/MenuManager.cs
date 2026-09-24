@@ -19,10 +19,12 @@ using UnityEngine.UI;
 /// <see cref="LobbySetupPanel"/> after a connection is established.
 /// Scene-selection and player-count configuration happens there, not here.
 ///
-/// <b>Persistence:</b> this object persists across scenes via
-/// <c>DontDestroyOnLoad</c>.  It must be — or become — a root GameObject;
-/// <see cref="Awake"/> silently detaches from any parent before calling
-/// <c>DontDestroyOnLoad</c>.
+/// <b>Persistence:</b> this object is scene-local (no <c>DontDestroyOnLoad</c>),
+/// so a fresh instance is created on every load of <c>MenuScene</c>.
+/// <see cref="MenuButtonHolder"/> lives in the scene and re-wires the UI
+/// references and button listeners to the current instance on <c>Start</c>/<c>OnEnable</c>;
+/// <see cref="MenuButtonHolder.ReconnectAllButtonsInScene"/> is also called
+/// after <see cref="NetworkConnectionManager.Disconnect"/> returns to the menu.
 /// </summary>
 public class MenuManager : MonoBehaviour
 {
@@ -74,12 +76,6 @@ public class MenuManager : MonoBehaviour
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
-
-        // DontDestroyOnLoad only works on root GameObjects.
-        if (transform.parent != null)
-            transform.SetParent(null);
-
-        DontDestroyOnLoad(gameObject);
     }
 
     private void Start()

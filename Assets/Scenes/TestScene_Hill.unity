@@ -3137,6 +3137,8 @@ GameObject:
   - component: {fileID: 216685923}
   - component: {fileID: 216685922}
   - component: {fileID: 216685924}
+  - component: {fileID: 216685926}
+  - component: {fileID: 216685925}
   m_Layer: 0
   m_Name: GameManager
   m_TagString: Untagged
@@ -3197,20 +3199,7 @@ MonoBehaviour:
       MinSecondsBetweenUpdates: 0
       MaxSecondsBetweenUpdates: 0
     m_InternalValue: 0
-  scoreToWin: 20
   endGamePanel: {fileID: 59436357}
-  guardPrefab: {fileID: 3286158824952163492, guid: 5f2296e137a1f564c86b1185ef196eed, type: 3}
-  playerPrefab: {fileID: 3286158824952163492, guid: 2d76bf7ada9bb634687585c1da80d0c5, type: 3}
-  playerSpawnPoints:
-  - {fileID: 1241077135}
-  - {fileID: 1622657570}
-  - {fileID: 1060774882}
-  - {fileID: 1241870401}
-  guardSpawnPoints:
-  - {fileID: 1819698332}
-  - {fileID: 428710130}
-  localSpawner: {fileID: 216685924}
-  coinSpawner: {fileID: 712900458}
 --- !u!114 &216685923
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -3251,6 +3240,43 @@ MonoBehaviour:
   ShowTopMostFoldoutHeaderGroup: 1
   runnerPrefab: {fileID: 3286158824952163492, guid: 2d76bf7ada9bb634687585c1da80d0c5, type: 3}
   guardPrefab: {fileID: 3286158824952163492, guid: 5f2296e137a1f564c86b1185ef196eed, type: 3}
+--- !u!114 &216685925
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 216685920}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ee7739cb03916e14087a6d1d1c71e0c7, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GameStateSystem
+  scoreToWin: 20
+--- !u!114 &216685926
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 216685920}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5c75b400f87957141b781fbb5f6d0d71, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GameSpawnSystem
+  guardPrefab: {fileID: 3286158824952163492, guid: 5f2296e137a1f564c86b1185ef196eed, type: 3}
+  playerPrefab: {fileID: 3286158824952163492, guid: 2d76bf7ada9bb634687585c1da80d0c5, type: 3}
+  playerSpawnPoints:
+  - {fileID: 1241077135}
+  - {fileID: 1622657570}
+  - {fileID: 1060774882}
+  - {fileID: 1241870401}
+  guardSpawnPoints:
+  - {fileID: 1819698332}
+  - {fileID: 428710130}
+  localSpawner: {fileID: 216685924}
+  coinSpawner: {fileID: 712900458}
 --- !u!1001 &232149343
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -26311,7 +26337,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 1, y: 0.5}
   m_AnchorMax: {x: 1, y: 0.5}
-  m_AnchoredPosition: {x: 710, y: 0}
+  m_AnchoredPosition: {x: -200, y: -300}
   m_SizeDelta: {x: 305, y: 344}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!1001 &1702607481

@@ -88,10 +88,6 @@ public class Guard : NetworkBehaviour
     private float _localAttackCooldown;
     private bool _isSwinging;
 
-    // Network interpolation for non-owner clients.
-    private Vector3 _networkPosition;
-    private Quaternion _networkRotation;
-
     // ====================================================================
     // Private – Input State
     // ====================================================================
@@ -116,9 +112,6 @@ public class Guard : NetworkBehaviour
         _characterController = GetComponent<CharacterController>();
         if (_characterController == null)
             Debug.LogError("[Guard] Missing CharacterController.");
-
-        _networkPosition = transform.position;
-        _networkRotation = transform.rotation;
 
         playerNumber.OnValueChanged += (_, n) => gameObject.name = "Catcher_P" + n;
         if (playerNumber.Value > 0) gameObject.name = "Catcher_P" + playerNumber.Value;
@@ -174,21 +167,13 @@ public class Guard : NetworkBehaviour
             AttackCooldownRemaining.Value =
                 Mathf.Max(0f, AttackCooldownRemaining.Value - Time.deltaTime);
 
-        if (IsOwner)
-        {
-            // Keep local copy in sync for smooth UI display.
-            _localAttackCooldown = AttackCooldownRemaining.Value;
+        if (!IsOwner) return;
 
-            if (!_isSwinging) HandleMovement();
-            HandleAttackInput();
-        }
-        else
-        {
-            transform.position = Vector3.Lerp(
-                transform.position, _networkPosition, Time.deltaTime * networkMovementSmoothness);
-            transform.rotation = Quaternion.Lerp(
-                transform.rotation, _networkRotation, Time.deltaTime * networkMovementSmoothness);
-        }
+        // Keep local copy in sync for smooth UI display.
+        _localAttackCooldown = AttackCooldownRemaining.Value;
+
+        if (!_isSwinging) HandleMovement();
+        HandleAttackInput();
 
         ApplyGravity();
     }
@@ -232,7 +217,7 @@ public class Guard : NetworkBehaviour
     // ====================================================================>
 
     /// <summary>Teleports the guard and snaps the camera. Called via ClientRpc.</summary>
-    [ClientRpc]
+    [Rpc(SendTo.ClientsAndHost)]
     public void TeleportPlayerClientRpc(Vector3 newPosition)
     {
         if (_characterController != null) _characterController.enabled = false;
@@ -293,7 +278,7 @@ public class Guard : NetworkBehaviour
         AttackServerRpc();
     }
 
-    [ServerRpc]
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
     private void AttackServerRpc()
     {
         if (AttackCooldownRemaining.Value > 0f) return;
@@ -305,14 +290,7 @@ public class Guard : NetworkBehaviour
         AnimateAttackClientRpc();
     }
 
-    [ClientRpc]
-    private void SetAttackCooldownClientRpc(float cooldown)
-    {
-        if (!IsOwner) return;
-        _localAttackCooldown = cooldown;
-    }
-
-    [ClientRpc]
+    [Rpc(SendTo.ClientsAndHost)]
     private void AnimateAttackClientRpc()
         => StartCoroutine(SwingAnimationCoroutine(swingDuration));
 
@@ -360,7 +338,7 @@ public class Guard : NetworkBehaviour
     /// animation finishes. Prevents mobile clients from getting stuck with
     /// <c>_isSwinging = true</c> if their local coroutine is interrupted.
     /// </summary>
-    [ClientRpc]
+    [Rpc(SendTo.ClientsAndHost)]
     private void FinishSwingClientRpc()
     {
         _isSwinging = false;

@@ -2294,6 +2294,8 @@ GameObject:
   - component: {fileID: 216685923}
   - component: {fileID: 216685922}
   - component: {fileID: 216685924}
+  - component: {fileID: 216685926}
+  - component: {fileID: 216685925}
   m_Layer: 0
   m_Name: GameManager
   m_TagString: Untagged
@@ -2354,20 +2356,7 @@ MonoBehaviour:
       MinSecondsBetweenUpdates: 0
       MaxSecondsBetweenUpdates: 0
     m_InternalValue: 0
-  scoreToWin: 20
   endGamePanel: {fileID: 59436357}
-  guardPrefab: {fileID: 3286158824952163492, guid: 5f2296e137a1f564c86b1185ef196eed, type: 3}
-  playerPrefab: {fileID: 3286158824952163492, guid: 2d76bf7ada9bb634687585c1da80d0c5, type: 3}
-  playerSpawnPoints:
-  - {fileID: 1354792003}
-  - {fileID: 645577943}
-  - {fileID: 1044762825}
-  - {fileID: 783664516}
-  guardSpawnPoints:
-  - {fileID: 232399945}
-  - {fileID: 487154866}
-  localSpawner: {fileID: 216685924}
-  coinSpawner: {fileID: 712900458}
 --- !u!114 &216685923
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2408,6 +2397,43 @@ MonoBehaviour:
   ShowTopMostFoldoutHeaderGroup: 1
   runnerPrefab: {fileID: 3286158824952163492, guid: 2d76bf7ada9bb634687585c1da80d0c5, type: 3}
   guardPrefab: {fileID: 3286158824952163492, guid: 5f2296e137a1f564c86b1185ef196eed, type: 3}
+--- !u!114 &216685925
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 216685920}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ee7739cb03916e14087a6d1d1c71e0c7, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GameStateSystem
+  scoreToWin: 20
+--- !u!114 &216685926
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 216685920}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5c75b400f87957141b781fbb5f6d0d71, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GameSpawnSystem
+  guardPrefab: {fileID: 3286158824952163492, guid: 5f2296e137a1f564c86b1185ef196eed, type: 3}
+  playerPrefab: {fileID: 3286158824952163492, guid: 2d76bf7ada9bb634687585c1da80d0c5, type: 3}
+  playerSpawnPoints:
+  - {fileID: 1354792003}
+  - {fileID: 645577943}
+  - {fileID: 1044762825}
+  - {fileID: 783664516}
+  guardSpawnPoints:
+  - {fileID: 232399945}
+  - {fileID: 487154866}
+  localSpawner: {fileID: 216685924}
+  coinSpawner: {fileID: 712900458}
 --- !u!1001 &221459255
 PrefabInstance:
   m_ObjectHideFlags: 0
